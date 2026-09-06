@@ -3171,9 +3171,9 @@ export async function getContacts(params: {
 }) {
   const { search, barangay, address, purok, sortBy = 'date', sortOrder = 'desc', page = 1, limit = 10, forceSync = false } = params;
 
-  if (sheetsConfig.syncEnabled) {
+  if (sheetsConfig.syncEnabled && forceSync) {
     try {
-      await ensureContactsSynced(forceSync);
+      await ensureContactsSynced(true);
     } catch (err: any) {
       console.error('[Sync] Failed to ensure contacts synced in getContacts:', err.message || err);
     }
@@ -3252,22 +3252,52 @@ export async function getContacts(params: {
     }
   }
 
+  // Helper: Smart contact search matching (exact, clean, tokenized / word-order agnostic)
+  const contactMatchesSearch = (
+    c: { full_name?: string; barangay?: string; purok?: string; contact_number?: string },
+    searchTerm: string
+  ): boolean => {
+    if (!searchTerm) return true;
+    const raw = searchTerm.toLowerCase().trim();
+    const name = (c.full_name || '').toLowerCase();
+    const bg = (c.barangay || '').toLowerCase();
+    const pur = (c.purok || '').toLowerCase();
+    const phone = (c.contact_number || '').replace(/[\s-]/g, '');
+    const cleanTermPhone = raw.replace(/[\s-]/g, '');
+
+    // 1. Direct substring match on any field
+    if (
+      name.includes(raw) ||
+      bg.includes(raw) ||
+      pur.includes(raw) ||
+      (!c.purok && 'no purok'.includes(raw)) ||
+      (phone && cleanTermPhone && phone.includes(cleanTermPhone))
+    ) {
+      return true;
+    }
+
+    // 2. Tokenized word matching (ignores commas, hyphens, and word order e.g. "Veradio, Angel Kate" vs "Angel Kate Veradio")
+    const tokens = raw.replace(/[,.\-_/]/g, ' ').split(/\s+/).filter(t => t.length > 0);
+    if (tokens.length > 1) {
+      const combined = `${name} ${bg} ${pur}`;
+      if (tokens.every(token => combined.includes(token))) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
   // Apply Search (Full Name, Barangay, Purok, Contact Number)
   if (search) {
     const term = search.toLowerCase().trim();
-    filtered = filtered.filter(
-      c =>
-         (c.full_name || '').toLowerCase().includes(term) ||
-         (c.barangay || '').toLowerCase().includes(term) ||
-         ((c.purok && c.purok.toLowerCase().includes(term)) || (!c.purok && 'no purok'.includes(term))) ||
-         (c.contact_number || '').includes(term)
-    );
+    filtered = filtered.filter(c => contactMatchesSearch(c, term));
   }
 
   // Apply Sorting: Available contacts ALWAYS first, Submitted / Locked contacts ALWAYS at the bottom!
   filtered.sort((a, b) => {
-    const aLocked = Boolean(a.locked || a.status === 'SUBMITTED' || a.submittedToBase44 || a.isSubmitted);
-    const bLocked = Boolean(b.locked || b.status === 'SUBMITTED' || b.submittedToBase44 || b.isSubmitted);
+    const aLocked = isContactSubmitted(a);
+    const bLocked = isContactSubmitted(b);
 
     if (!aLocked && bLocked) return -1;
     if (aLocked && !bLocked) return 1;
@@ -3289,155 +3319,197 @@ export async function getContacts(params: {
   // Pagination calculations
   const total = filtered.length;
   const startIndex = (page - 1) * limit;
-  const paginated = filtered.slice(startIndex, startIndex + limit);
+  const paginated = filtered.slice(startIndex, startIndex + limit).map(c => {
+    const isSub = isContactSubmitted(c);
+    if (isSub) {
+      return {
+        ...c,
+        locked: true,
+        isSubmitted: true,
+        status: c.status || 'SUBMITTED'
+      };
+    }
+    return c;
+  });
   const totalPages = Math.ceil(total / limit);
 
-  // Compute folder statistics for each barangay (for all contacts in PCU Directory)
-  let barangayFolders = allBarangays.map(bg => {
-    const bgContacts = directoryContacts.filter(c => isBarangayMatch(c.barangay, bg));
-    const purokSet = new Set<string>();
-    let geotaggedCount = 0;
-    let submittedCount = 0;
-    let availableCount = 0;
-    bgContacts.forEach(c => {
-      if (c.purok && c.purok.trim() && c.purok.trim().toLowerCase() !== 'no purok') {
-        purokSet.add(c.purok.trim());
-      } else {
-        purokSet.add('No Purok');
-      }
-      if (c.geotagged) geotaggedCount++;
-      if (c.locked || c.status === 'SUBMITTED' || c.isSubmitted || c.submittedToBase44) {
-        submittedCount++;
-      } else {
-        availableCount++;
-      }
-    });
-    return {
-      barangay: bg,
-      count: bgContacts.length,
-      availableCount,
-      submittedCount,
-      purokCount: purokSet.size,
-      geotaggedCount
-    };
-  }).filter(f => f.count > 0);
+  // Optimized single-pass statistics calculation for barangays and puroks
+  const term = search ? search.toLowerCase().trim() : '';
 
-  // If we have any no-address contacts, ensure the NO ADDRESS folder is part of barangayFolders
-  if (noAddressContacts.length > 0) {
-    const hasFolder = barangayFolders.some(f => f.barangay.toUpperCase() === 'NO ADDRESS');
-    if (!hasFolder) {
-      const purokSet = new Set<string>();
-      let geotaggedCount = 0;
-      let submittedCount = 0;
-      let availableCount = 0;
-      noAddressContacts.forEach(c => {
-        if (c.purok && c.purok.trim() && c.purok.trim().toLowerCase() !== 'no purok') {
-          purokSet.add(c.purok.trim());
-        } else {
-          purokSet.add('No Purok');
-        }
-        if (c.geotagged) geotaggedCount++;
-        if (c.locked || c.status === 'SUBMITTED' || c.isSubmitted || c.submittedToBase44) {
-          submittedCount++;
-        } else {
-          availableCount++;
-        }
-      });
-      barangayFolders.push({
+  // Canonical barangay map for O(1) matching
+  const uniqueContactBarangays = Array.from(new Set(directoryContacts.map(c => (c.barangay || '').trim())));
+  const canonicalBarangayMap = new Map<string, string>();
+  for (const rawBg of uniqueContactBarangays) {
+    if (!rawBg || rawBg.toLowerCase() === 'no address' || rawBg.toLowerCase() === 'no barangay') {
+      canonicalBarangayMap.set(rawBg, 'NO ADDRESS');
+      continue;
+    }
+    const matched = allBarangays.find(b => isBarangayMatch(rawBg, b));
+    canonicalBarangayMap.set(rawBg, matched || normalizeBarangayName(rawBg));
+  }
+
+  // Pre-initialize stats objects for all barangays
+  const bgStats = new Map<string, {
+    barangay: string;
+    count: number;
+    availableCount: number;
+    submittedCount: number;
+    purokSet: Set<string>;
+    geotaggedCount: number;
+    hasMatchingContact: boolean;
+  }>();
+
+  for (const bg of allBarangays) {
+    bgStats.set(bg, {
+      barangay: bg,
+      count: 0,
+      availableCount: 0,
+      submittedCount: 0,
+      purokSet: new Set<string>(),
+      geotaggedCount: 0,
+      hasMatchingContact: false
+    });
+  }
+
+  // Pre-initialize stats objects for all puroks
+  const purokStats = new Map<string, {
+    purok: string;
+    count: number;
+    availableCount: number;
+    submittedCount: number;
+    barangaySet: Set<string>;
+    geotaggedCount: number;
+    hasMatchingContact: boolean;
+  }>();
+
+  for (const pur of allPuroks) {
+    purokStats.set(pur, {
+      purok: pur,
+      count: 0,
+      availableCount: 0,
+      submittedCount: 0,
+      barangaySet: new Set<string>(),
+      geotaggedCount: 0,
+      hasMatchingContact: false
+    });
+  }
+
+  // Single pass over directoryContacts
+  const isNoAddressFilter = filterBarangay && (filterBarangay.toUpperCase() === 'NO ADDRESS' || filterBarangay.toLowerCase() === 'no address');
+  const hasSpecificBarangayFilter = Boolean(filterBarangay && filterBarangay !== 'All Addresses' && filterBarangay !== 'All Barangays');
+
+  for (const c of directoryContacts) {
+    const rawBg = (c.barangay || '').trim();
+    const canonBg = canonicalBarangayMap.get(rawBg) || (rawBg ? normalizeBarangayName(rawBg) : 'NO ADDRESS');
+    
+    const rawPur = (c.purok || '').trim();
+    const canonPur = (!rawPur || rawPur.toLowerCase() === 'no purok') ? 'No Purok' : rawPur;
+
+    const isSubmitted = Boolean(c.locked || c.status === 'SUBMITTED' || c.isSubmitted || c.submittedToBase44);
+    const isGeotagged = Boolean(c.geotagged);
+
+    const contactMatchesTerm = Boolean(
+      term && (
+        (c.full_name || '').toLowerCase().includes(term) ||
+        (c.contact_number || '').includes(term) ||
+        (c.purok || '').toLowerCase().includes(term)
+      )
+    );
+
+    // Update Barangay Stats
+    let bEntry = bgStats.get(canonBg);
+    if (!bEntry && canonBg === 'NO ADDRESS') {
+      bEntry = {
         barangay: 'NO ADDRESS',
-        count: noAddressContacts.length,
-        availableCount,
-        submittedCount,
-        purokCount: purokSet.size,
-        geotaggedCount
-      });
+        count: 0,
+        availableCount: 0,
+        submittedCount: 0,
+        purokSet: new Set<string>(),
+        geotaggedCount: 0,
+        hasMatchingContact: false
+      };
+      bgStats.set('NO ADDRESS', bEntry);
+    }
+    if (bEntry) {
+      bEntry.count++;
+      if (isSubmitted) bEntry.submittedCount++;
+      else bEntry.availableCount++;
+      if (isGeotagged) bEntry.geotaggedCount++;
+      bEntry.purokSet.add(canonPur);
+      if (contactMatchesTerm) bEntry.hasMatchingContact = true;
+    }
+
+    // Update Purok Stats (respecting filterBarangay if specified)
+    let passesBarangayForPurok = true;
+    if (hasSpecificBarangayFilter) {
+      if (isNoAddressFilter) {
+        passesBarangayForPurok = (canonBg === 'NO ADDRESS');
+      } else {
+        passesBarangayForPurok = (canonBg === filterBarangay || isBarangayMatch(rawBg, filterBarangay!));
+      }
+    }
+
+    if (passesBarangayForPurok) {
+      // Find matching purok entry in purokStats (case-insensitive fallback)
+      let pEntry = purokStats.get(canonPur);
+      if (!pEntry) {
+        for (const [key, val] of purokStats.entries()) {
+          if (key.toLowerCase() === canonPur.toLowerCase()) {
+            pEntry = val;
+            break;
+          }
+        }
+      }
+      if (pEntry) {
+        pEntry.count++;
+        if (isSubmitted) pEntry.submittedCount++;
+        else pEntry.availableCount++;
+        if (isGeotagged) pEntry.geotaggedCount++;
+        if (canonBg) pEntry.barangaySet.add(canonBg);
+        if (contactMatchesTerm) pEntry.hasMatchingContact = true;
+      }
     }
   }
 
-  // Compute folder statistics for each purok sorted alphabetically (for all contacts in PCU Directory)
-  let purokFolders = allPuroks.map(purok => {
-    const isNoPurok = purok === 'No Purok';
-    const pContacts = directoryContacts.filter(c => {
-      if (filterBarangay && filterBarangay !== 'All Addresses' && filterBarangay !== 'All Barangays') {
-        if (filterBarangay.toUpperCase() === 'NO ADDRESS') {
-          if (c.barangay && c.barangay.trim() && c.barangay.trim().toLowerCase() !== 'no address' && c.barangay.trim().toLowerCase() !== 'no barangay') return false;
-        } else {
-          if (!isBarangayMatch(c.barangay, filterBarangay)) return false;
-        }
-      }
-      if (isNoPurok) {
-        return !c.purok || !c.purok.trim() || c.purok.trim().toLowerCase() === 'no purok';
-      }
-      return c.purok && c.purok.trim().toLowerCase() === purok.trim().toLowerCase();
-    });
-    const barangaySet = new Set<string>();
-    let geotaggedCount = 0;
-    let submittedCount = 0;
-    let availableCount = 0;
-    pContacts.forEach(c => {
-      if (c.barangay) barangaySet.add(c.barangay.trim());
-      if (c.geotagged) geotaggedCount++;
-      if (c.locked || c.status === 'SUBMITTED' || c.isSubmitted || c.submittedToBase44) {
-        submittedCount++;
-      } else {
-        availableCount++;
-      }
-    });
-    return {
-      purok,
-      count: pContacts.length,
-      availableCount,
-      submittedCount,
-      barangayCount: barangaySet.size,
-      geotaggedCount,
-      barangays: Array.from(barangaySet)
-    };
-  }).filter(f => f.count > 0);
+  // Build folder arrays
+  let barangayFolders = Array.from(bgStats.values())
+    .filter(f => f.count > 0)
+    .map(f => ({
+      barangay: f.barangay,
+      count: f.count,
+      availableCount: f.availableCount,
+      submittedCount: f.submittedCount,
+      purokCount: f.purokSet.size,
+      geotaggedCount: f.geotaggedCount
+    }));
+
+  let purokFolders = Array.from(purokStats.values())
+    .filter(f => f.count > 0)
+    .map(f => ({
+      purok: f.purok,
+      count: f.count,
+      availableCount: f.availableCount,
+      submittedCount: f.submittedCount,
+      barangayCount: f.barangaySet.size,
+      geotaggedCount: f.geotaggedCount,
+      barangays: Array.from(f.barangaySet)
+    }));
 
   // Apply Search to folders so that we only return matching folders or folders containing matching contacts
-  if (search) {
-    const term = search.toLowerCase().trim();
-    
-    barangayFolders = barangayFolders.filter(f => {
-      // 1. Folder name matches search query
-      if (f.barangay.toLowerCase().includes(term)) return true;
-      // 2. OR any contact in this folder matches search query
-      return directoryContacts.some(c => {
-        const matchesFolder = f.barangay.toUpperCase() === 'NO ADDRESS'
-          ? (!c.barangay || !c.barangay.trim() || c.barangay.trim().toLowerCase() === 'no address' || c.barangay.trim().toLowerCase() === 'no barangay')
-          : isBarangayMatch(c.barangay, f.barangay);
-        if (!matchesFolder) return false;
+  if (term) {
+    const bgFoldersWithMatches = new Set(
+      Array.from(bgStats.values())
+        .filter(f => f.barangay.toLowerCase().includes(term) || f.hasMatchingContact)
+        .map(f => f.barangay)
+    );
+    barangayFolders = barangayFolders.filter(f => bgFoldersWithMatches.has(f.barangay));
 
-        return (c.full_name || '').toLowerCase().includes(term) ||
-               (c.contact_number || '').includes(term) ||
-               (c.purok || '').toLowerCase().includes(term);
-      });
-    });
-
-    purokFolders = purokFolders.filter(f => {
-      // 1. Folder name matches search query
-      if (f.purok.toLowerCase().includes(term)) return true;
-      // 2. OR any contact in this folder matches search query
-      return directoryContacts.some(c => {
-        if (filterBarangay && filterBarangay !== 'All Addresses' && filterBarangay !== 'All Barangays') {
-          const isNoAddressFolder = filterBarangay.toUpperCase() === 'NO ADDRESS';
-          const matchesBg = isNoAddressFolder
-            ? (!c.barangay || !c.barangay.trim() || c.barangay.trim().toLowerCase() === 'no address' || c.barangay.trim().toLowerCase() === 'no barangay')
-            : isBarangayMatch(c.barangay, filterBarangay);
-          if (!matchesBg) return false;
-        }
-
-        const isNoPurokFolder = f.purok === 'No Purok';
-        const matchesPurok = isNoPurokFolder
-          ? (!c.purok || !c.purok.trim() || c.purok.toLowerCase() === 'no purok')
-          : (c.purok && c.purok.toLowerCase() === f.purok.toLowerCase());
-        if (!matchesPurok) return false;
-
-        return (c.full_name || '').toLowerCase().includes(term) ||
-               (c.contact_number || '').includes(term) ||
-               (c.purok || '').toLowerCase().includes(term);
-      });
-    });
+    const purokFoldersWithMatches = new Set(
+      Array.from(purokStats.values())
+        .filter(f => f.purok.toLowerCase().includes(term) || f.hasMatchingContact)
+        .map(f => f.purok)
+    );
+    purokFolders = purokFolders.filter(f => purokFoldersWithMatches.has(f.purok));
   }
 
   // Sort both Barangay Folders and Purok Folders based on the number of contacts (highest population on top)
@@ -4290,7 +4362,7 @@ export async function deleteContactPermanentlyFromGoogleSheets(contact: {
   }
 }
 
-// Auto-detect bulk separator
+// Auto-detect bulk separator (supports Pipe, Tab, Semicolon, Comma)
 export function detectSeparator(text: string): string {
   const lines = text.split('\n').filter(line => line.trim() !== '');
   if (lines.length === 0) return ',';
@@ -4298,16 +4370,19 @@ export function detectSeparator(text: string): string {
   let pipes = 0;
   let commas = 0;
   let tabs = 0;
+  let semicolons = 0;
 
-  const sample = lines.slice(0, 5);
+  const sample = lines.slice(0, 10);
   for (const line of sample) {
     pipes += (line.match(/\|/g) || []).length;
     commas += (line.match(/,/g) || []).length;
     tabs += (line.match(/\t/g) || []).length;
+    semicolons += (line.match(/;/g) || []).length;
   }
 
-  if (pipes >= commas && pipes >= tabs && pipes > 0) return '|';
-  if (tabs >= commas && tabs >= pipes && tabs > 0) return '\t';
+  if (pipes >= commas && pipes >= tabs && pipes >= semicolons && pipes > 0) return '|';
+  if (tabs >= commas && tabs >= pipes && tabs >= semicolons && tabs > 0) return '\t';
+  if (semicolons >= commas && semicolons >= pipes && semicolons >= tabs && semicolons > 0) return ';';
   return ',';
 }
 
@@ -4321,14 +4396,26 @@ export interface ParseResult {
   reason?: string;
 }
 
+function cleanBulkField(str: any): string {
+  if (str === null || str === undefined) return '';
+  let s = String(str).trim();
+  // Strip outer quotes if any
+  s = s.replace(/^["'`]+|["'`]+$/g, '').trim();
+  return s;
+}
+
 // Bulk Import Preview Generator
-export function previewBulkImport(text: string): {
+export function previewBulkImport(
+  text: string,
+  defaultBarangay?: string,
+  defaultPurok?: string
+): {
   results: ParseResult[];
   summary: { total: number; valid: number; duplicate: number; invalid: number };
   detectedSeparator: string;
 } {
   const separator = detectSeparator(text);
-  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  const rawLines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
   const results: ParseResult[] = [];
   let validCount = 0;
@@ -4338,61 +4425,101 @@ export function previewBulkImport(text: string): {
   // Track already-seen in current batch to prevent intra-batch duplicates
   const batchSeen = new Set<string>();
 
+  // Detect and skip header row if present
+  let startIndex = 0;
+  if (rawLines.length > 0) {
+    const firstLineLower = rawLines[0].toLowerCase();
+    const hasHeaderKeywords = (
+      firstLineLower.includes('name') || 
+      firstLineLower.includes('full name') ||
+      firstLineLower.includes('fullname')
+    ) && (
+      firstLineLower.includes('barangay') || 
+      firstLineLower.includes('address') || 
+      firstLineLower.includes('purok') || 
+      firstLineLower.includes('contact') || 
+      firstLineLower.includes('phone') ||
+      firstLineLower.includes('number')
+    );
+    if (hasHeaderKeywords) {
+      startIndex = 1;
+    }
+  }
+
+  const lines = rawLines.slice(startIndex);
+
+  const fallbackBg = defaultBarangay ? normalizeBarangayName(defaultBarangay) : 'Barangay Central';
+  const fallbackPur = defaultPurok ? capitalizeWords(defaultPurok.trim()) : '';
+
   for (const line of lines) {
-    const parts = line.split(separator).map(p => p.trim());
-    let name = '';
+    let parts = line.split(separator).map(cleanBulkField);
+
+    // If first column is purely a row number (e.g. 1, 2, 10, #, No.), shift it off
+    if (parts.length > 1 && /^#|^\d+[\.\)]?$|^no\.?$/i.test(parts[0])) {
+      parts = parts.slice(1);
+    }
+
+    let rawName = parts[0] || '';
+    // Strip leading numbers from name if user pasted "1. Juan Dela Cruz" or "1) Juan Dela Cruz"
+    rawName = rawName.replace(/^\d+[\.\)]\s*/, '').trim();
+
+    let name = capitalizeWords(rawName);
     let barangay = '';
     let purok = '';
     let number = '';
 
     if (parts.length >= 4) {
-      name = capitalizeWords(parts[0]);
-      barangay = parts[1] ? normalizeBarangayName(parts[1]) : 'Barangay Central';
-      purok = capitalizeWords(parts[2]);
-      number = parts[3];
+      barangay = parts[1] ? normalizeBarangayName(parts[1]) : fallbackBg;
+      purok = parts[2] ? capitalizeWords(parts[2]) : fallbackPur;
+      number = parts[3] || '';
     } else if (parts.length === 3) {
-      name = capitalizeWords(parts[0]);
-      barangay = parts[1] ? normalizeBarangayName(parts[1]) : 'Barangay Central';
-      // Detect if the third part looks like a phone/contact number or a Purok.
+      barangay = parts[1] ? normalizeBarangayName(parts[1]) : fallbackBg;
       const lastPart = parts[2];
       const digitCount = (lastPart.match(/\d/g) || []).length;
       const isProbablyPhoneNumber = digitCount >= 5 || /^[0\+]\d+/.test(lastPart);
       if (isProbablyPhoneNumber) {
-        purok = '';
+        purok = fallbackPur;
         number = lastPart;
       } else {
-        purok = capitalizeWords(lastPart);
+        purok = capitalizeWords(lastPart) || fallbackPur;
         number = '';
       }
     } else if (parts.length === 2) {
-      name = capitalizeWords(parts[0]);
-      barangay = parts[1] ? normalizeBarangayName(parts[1]) : 'Barangay Central';
-      purok = '';
-      number = '';
-    } else if (parts.length === 1 && parts[0]) {
-      name = capitalizeWords(parts[0]);
-      barangay = 'Barangay Central';
-      purok = '';
+      const secondPart = parts[1];
+      const digitCount = (secondPart.match(/\d/g) || []).length;
+      const isProbablyPhoneNumber = digitCount >= 7 || /^[0\+]\d+/.test(secondPart);
+      if (isProbablyPhoneNumber) {
+        barangay = fallbackBg;
+        purok = fallbackPur;
+        number = secondPart;
+      } else {
+        barangay = secondPart ? normalizeBarangayName(secondPart) : fallbackBg;
+        purok = fallbackPur;
+        number = '';
+      }
+    } else if (parts.length === 1 && name) {
+      barangay = fallbackBg;
+      purok = fallbackPur;
       number = '';
     } else {
       results.push({
         raw: line,
-        full_name: parts[0] || '',
-        barangay: 'Barangay Central',
-        purok: '',
+        full_name: name,
+        barangay: fallbackBg,
+        purok: fallbackPur,
         contact_number: '',
         status: 'invalid',
-        reason: 'Line is empty or invalid.'
+        reason: 'Line is empty or cannot be parsed.'
       });
       invalidCount++;
       continue;
     }
 
     if (!barangay) {
-      barangay = 'Barangay Central';
+      barangay = fallbackBg;
     }
 
-    if (!name) {
+    if (!name || name.length < 2) {
       results.push({
         raw: line,
         full_name: name,
@@ -4400,7 +4527,7 @@ export function previewBulkImport(text: string): {
         purok: purok,
         contact_number: number,
         status: 'invalid',
-        reason: 'Full Name is required and cannot be blank.'
+        reason: 'Full Name is required and must be at least 2 characters.'
       });
       invalidCount++;
       continue;
@@ -4424,7 +4551,7 @@ export function previewBulkImport(text: string): {
         purok: purok,
         contact_number: number,
         status: 'duplicate',
-        reason: dbDuplicate ? 'Contact with this Full Name already exists in database.' : 'Duplicate Full Name present earlier in this bulk list.'
+        reason: dbDuplicate ? 'Contact already exists in directory (will update if selected).' : 'Duplicate name earlier in this bulk list.'
       });
       duplicateCount++;
     } else {
@@ -4450,15 +4577,15 @@ export function previewBulkImport(text: string): {
       duplicate: duplicateCount,
       invalid: invalidCount
     },
-    detectedSeparator: separator === '|' ? 'Pipe (|)' : separator === '\t' ? 'Tab' : 'Comma (,)'
+    detectedSeparator: separator === '|' ? 'Pipe (|)' : separator === '\t' ? 'Tab' : separator === ';' ? 'Semicolon (;)' : 'Comma (,)'
   };
 }
 
 // Bulk Import Saver
 export async function saveBulkImport(
-  items: Array<{ full_name: string; barangay?: string; address?: string; purok?: string; contact_number: string; status: string }>,
-  option: 'save_all' | 'skip_invalid' | 'replace_duplicate',
-  username: string
+  items: Array<{ full_name: string; barangay?: string; address?: string; purok?: string; contact_number?: string; status?: string }>,
+  option: 'save_all' | 'add_as_new' | 'skip_invalid' | 'replace_duplicate' = 'save_all',
+  username: string = 'Admin'
 ) {
   let savedCount = 0;
   let skippedCount = 0;
@@ -4468,22 +4595,52 @@ export async function saveBulkImport(
   const updated: Contact[] = [];
   const batchSavedKeys = new Set<string>();
 
-  for (const item of items) {
-    const formattedName = capitalizeWords(item.full_name);
-    const formattedBarangay = normalizeBarangayName(item.barangay || item.address || '');
-    const formattedPurok = item.purok ? capitalizeWords(item.purok) : '';
-    const number = item.contact_number.trim();
+  // Determine starting local ID once before the loop to guarantee efficiency and uniqueness
+  let currentNextId = getNextLocalId();
 
-    if (!formattedName || !formattedBarangay) {
+  for (const item of items) {
+    const rawName = cleanBulkField(item.full_name).replace(/^\d+[\.\)]\s*/, '').trim();
+    const formattedName = capitalizeWords(rawName);
+    const formattedBarangay = normalizeBarangayName(cleanBulkField(item.barangay || item.address || '')) || 'Barangay Central';
+    const formattedPurok = capitalizeWords(cleanBulkField(item.purok || ''));
+    const number = cleanBulkField(item.contact_number || '');
+
+    if (!formattedName || formattedName.length < 2) {
       skippedCount++;
       continue;
     }
 
     const nameKey = getCanonicalNameKey(formattedName);
 
-    // Strictly check for duplicate in batch already processed
+    // If option is add_as_new, always insert as a new contact even if name matches!
+    if (option === 'add_as_new') {
+      while (contactsCache.some(c => Number(c.id) === currentNextId)) {
+        currentNextId++;
+      }
+      const newId = currentNextId++;
+
+      const newContact: Contact = {
+        id: newId,
+        full_name: formattedName,
+        barangay: formattedBarangay,
+        purok: formattedPurok,
+        contact_number: number,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        deleted_at: null,
+        added_locally: true,
+        added_from_print_list: true
+      };
+      contactsCache.push(newContact);
+      appended.push(newContact);
+      savedCount++;
+      batchSavedKeys.add(nameKey);
+      continue;
+    }
+
+    // Check for duplicate in batch already processed
     if (batchSavedKeys.has(nameKey)) {
-      if (option === 'replace_duplicate') {
+      if (option === 'replace_duplicate' || option === 'save_all') {
         const idx = contactsCache.findIndex(c => !c.deleted_at && getCanonicalNameKey(c.full_name) === nameKey);
         if (idx !== -1) {
           contactsCache[idx] = {
@@ -4495,6 +4652,7 @@ export async function saveBulkImport(
           };
           updated.push(contactsCache[idx]);
           replacedCount++;
+          savedCount++;
         }
       } else {
         skippedCount++;
@@ -4510,7 +4668,7 @@ export async function saveBulkImport(
     );
 
     if (duplicateIndex !== -1) {
-      if (option === 'replace_duplicate') {
+      if (option === 'replace_duplicate' || option === 'save_all') {
         // Update details of duplicate contact and reset update timestamp
         contactsCache[duplicateIndex] = {
           ...contactsCache[duplicateIndex],
@@ -4524,17 +4682,16 @@ export async function saveBulkImport(
         savedCount++;
         batchSavedKeys.add(nameKey);
       } else {
-        // Strictly skip duplicate to ensure no duplicate full names
+        // Strictly skip duplicate
         skippedCount++;
       }
     } else {
       // Valid record (no duplicate in database or batch)
-      if (item.status === 'invalid' && option !== 'save_all') {
-        skippedCount++;
-        continue;
+      while (contactsCache.some(c => Number(c.id) === currentNextId)) {
+        currentNextId++;
       }
+      const newId = currentNextId++;
 
-      const newId = getNextLocalId();
       const newContact: Contact = {
         id: newId,
         full_name: formattedName,
@@ -4554,12 +4711,14 @@ export async function saveBulkImport(
     }
   }
 
-  // Deduplicate contactsCache to guarantee 100% strict uniqueness by Full Name
-  contactsCache = deduplicateContactsByName(contactsCache);
+  // Deduplicate contactsCache to guarantee strict uniqueness by Full Name (unless add_as_new was chosen)
+  if (option !== 'add_as_new') {
+    contactsCache = deduplicateContactsByName(contactsCache);
+  }
   await saveContacts();
   await addActivity(
     username,
-    `Performed bulk entry import. Saved: ${savedCount} records (including ${replacedCount} replaced duplicates), Skipped: ${skippedCount}.`
+    `Performed bulk entry import. Saved: ${savedCount} records (including ${replacedCount} updated records), Skipped: ${skippedCount}.`
   );
 
   // Push new and updated records to Google Sheets if connected
@@ -4567,13 +4726,6 @@ export async function saveBulkImport(
     pushBulkToSheets(appended, updated).catch(err => {
       console.error('Error during pushBulkToSheets background job:', err);
     });
-
-    // Save to Base44 database
-    (async () => {
-      for (const contact of [...appended, ...updated]) {
-        await saveContactToBase44(contact, username).catch(err => console.warn('[Base44 Bulk Save]', err));
-      }
-    })();
   }
 
   return {
@@ -5678,11 +5830,8 @@ export async function syncWithGoogleSheets(username: string): Promise<{ success:
     );
     
     if (!alreadyExists) {
-      const isPendingLocalSync = sheetsConfig.syncEnabled 
-        ? (lc.added_locally && (Date.now() - new Date(lc.created_at).getTime() < 300000))
-        : true;
-
-      if (isPendingLocalSync || isContactSubmitted(lc)) {
+      // Always retain local additions, submitted records, and active directory records
+      if (lc.added_locally || isContactSubmitted(lc) || lc.added_from_print_list !== false) {
         mergedContacts.push(lc);
       }
     } else {

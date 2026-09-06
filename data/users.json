@@ -940,7 +940,7 @@
   {
     "username": "christlrosejaguit32",
     "passwordHash": "c3f2a206a73ec3c72d0c3067f4e7f813ce3f0efb3fbf8c40cb0bc7d2b8b50f01",
-    "role": "LEADER",
+    "role": "IT",
     "displayName": "CHRISTL ROSE JAGUIT",
     "avatarDataUrl": "",
     "fullName": "CHRISTL ROSE JAGUIT",
@@ -949,7 +949,7 @@
     "status": "Active",
     "createdAt": "2026-08-18T08:34:10.827Z",
     "passwordPlain": "c3f2a206a73ec3c72d0c3067f4e7f813ce3f0efb3fbf8c40cb0bc7d2b8b50f01",
-    "updatedAt": "2026-08-18T08:37:32.513Z"
+    "updatedAt": "2026-09-05T02:40:46.061Z"
   },
   {
     "username": "israelleah34",
@@ -1334,14 +1334,14 @@
     "passwordHash": "8287b9c271e4d925fd840153e708af69518ad7c90c0ea3dad1244aa086b03ffb",
     "role": "IT",
     "displayName": "jcfernandezalviorja",
-    "avatarDataUrl": "/uploads/avatars/avatar_jcfernandezalviorja.jpg?t=1788408394221",
+    "avatarDataUrl": "/uploads/avatars/avatar_jcfernandezalviorja.png?t=1788662060693",
     "fullName": "jcfernandezalviorja",
     "email": "jcfernandezalvior.ja@gmail.com",
     "barangay": "Central",
     "status": "Active",
     "createdAt": "2026-09-03T01:43:20.420Z",
     "passwordPlain": "2131984",
-    "updatedAt": "2026-09-03T04:06:34.221Z"
+    "updatedAt": "2026-09-06T02:34:20.693Z"
   },
   {
     "username": "annjudyeugnab",
@@ -1384,5 +1384,61 @@
     "createdAt": "2026-09-03T02:06:11.255Z",
     "passwordPlain": "11495",
     "updatedAt": "2026-09-03T02:06:11.255Z"
+  },
+  {
+    "username": "april",
+    "passwordHash": "65ec920cb42d205741f85b4d7aeb8118ce39a6f5609311006ce0196bc9bd2483",
+    "role": "IT",
+    "displayName": "april mae rama",
+    "avatarDataUrl": "",
+    "fullName": "april mae rama",
+    "email": "april@gmail.com",
+    "barangay": "Sta. Lucia",
+    "status": "Active",
+    "createdAt": "2026-09-05T07:44:55.054Z",
+    "passwordPlain": "rama",
+    "updatedAt": "2026-09-05T07:44:55.054Z"
+  },
+  {
+    "username": "rhea",
+    "passwordHash": "67f70786288b7eea9b3cf5a29e8aabd9aa623388d5fc5b5805bec8f40ee2c220",
+    "role": "IT",
+    "displayName": "rhea villanueva",
+    "avatarDataUrl": "",
+    "fullName": "rhea villanueva",
+    "email": "rhea@gmail.com",
+    "barangay": "Tuburan",
+    "status": "Active",
+    "createdAt": "2026-09-05T06:32:18.328Z",
+    "passwordPlain": "rhea",
+    "updatedAt": "2026-09-05T06:32:18.328Z"
+  },
+  {
+    "username": "jemaelyn",
+    "passwordHash": "42d7de82b5f2dd8852c7f1c82278a489a603d62a7e042322f02c3063d91420f4",
+    "role": "IT",
+    "displayName": "jemaelyn miparanum",
+    "avatarDataUrl": "",
+    "fullName": "jemaelyn miparanum",
+    "email": "jemaelyn@gmail.com",
+    "barangay": "Balangsan",
+    "status": "Active",
+    "createdAt": "2026-09-05T02:47:18.722Z",
+    "passwordPlain": "miparanum",
+    "updatedAt": "2026-09-05T02:47:18.722Z"
+  },
+  {
+    "username": "christl",
+    "passwordHash": "618d663af0f1ec88a5a19defa65a2f80d06582a832510b12f475d80870bdb3ab",
+    "role": "IT",
+    "displayName": "CHRISTL JAGUIT",
+    "avatarDataUrl": "",
+    "fullName": "CHRISTL JAGUIT",
+    "email": "christl@gmail.com",
+    "barangay": "Sto. Niño",
+    "status": "Active",
+    "createdAt": "2026-09-05T02:42:59.265Z",
+    "passwordPlain": "rose",
+    "updatedAt": "2026-09-05T02:42:59.265Z"
   }
 ]

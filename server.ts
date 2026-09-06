@@ -95,10 +95,12 @@ export async function getApp() {
   // Middleware to ensure contacts are loaded/synchronized from Google Sheets before accessing contact routes
   const ensureSyncedMiddleware = async (req: Request, res: Response, next: any) => {
     try {
-      // Trigger background sync asynchronously without blocking HTTP requests
-      ensureContactsSynced().catch((err: any) => {
-        console.error('[Sync Middleware] Non-blocking background sync notice:', err.message);
-      });
+      // Only trigger explicit sync if sync=true query is passed; routine queries read fast local cache
+      if (req.query.sync === 'true') {
+        ensureContactsSynced(true).catch((err: any) => {
+          console.error('[Sync Middleware] Sync notice:', err.message);
+        });
+      }
       next();
     } catch (err: any) {
       console.error('[Sync Middleware] Failed to ensure contacts are synced:', err.message);
@@ -880,12 +882,12 @@ export async function getApp() {
   // Bulk entries - step 1: Parse and generate validation preview
   app.post('/api/contacts/bulk-preview', requireAuth, (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { text } = req.body;
+      const { text, defaultBarangay, defaultPurok } = req.body;
       if (!text || text.trim().length === 0) {
         return res.status(400).json({ error: 'Text content cannot be empty.' });
       }
 
-      const preview = previewBulkImport(text);
+      const preview = previewBulkImport(text, defaultBarangay, defaultPurok);
       res.json(preview);
     } catch (err: any) {
       res.status(400).json({ error: err.message });
@@ -895,18 +897,23 @@ export async function getApp() {
   // Bulk entries - step 2: Save bulk entries under a specified action
   app.post('/api/contacts/bulk-save', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { items, option } = req.body;
+      let { items, text, option = 'save_all', defaultBarangay, defaultPurok } = req.body;
       const username = req.user?.username || 'Admin';
 
+      // Support direct saving from raw text if items array is not provided
+      if ((!items || !Array.isArray(items) || items.length === 0) && text && typeof text === 'string' && text.trim().length > 0) {
+        const preview = previewBulkImport(text, defaultBarangay, defaultPurok);
+        items = preview.results;
+      }
+
       if (!items || !Array.isArray(items) || items.length === 0) {
-        return res.status(400).json({ error: 'No items provided to import.' });
+        return res.status(400).json({ error: 'No contact items or text provided to import.' });
       }
 
-      if (!option || !['save_all', 'skip_invalid', 'replace_duplicate'].includes(option)) {
-        return res.status(400).json({ error: 'Invalid or missing import option selection.' });
-      }
+      const validOptions = ['save_all', 'add_as_new', 'skip_invalid', 'replace_duplicate'];
+      const chosenOption = validOptions.includes(option) ? option : 'save_all';
 
-      const summary = await saveBulkImport(items, option, username);
+      const summary = await saveBulkImport(items, chosenOption as any, username);
       res.json(summary);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
