@@ -24,12 +24,14 @@ export const ContactForm: React.FC<ContactFormProps> = ({ editTarget, onSave, on
   const [contactNumber, setContactNumber] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const isEditingExisting = Boolean(editTarget && editTarget.id);
+
   useEffect(() => {
     if (editTarget) {
-      setFullName(editTarget.full_name);
+      setFullName(editTarget.full_name || '');
       setBarangay(editTarget.barangay || '');
       setPurok(editTarget.purok || '');
-      setContactNumber(editTarget.contact_number);
+      setContactNumber(editTarget.contact_number || '');
     } else {
       clearForm();
     }
@@ -101,15 +103,15 @@ export const ContactForm: React.FC<ContactFormProps> = ({ editTarget, onSave, on
   return (
     <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
       <div className="flex items-center gap-3 border-b border-slate-100 pb-4 mb-5">
-        <div className={`p-2 rounded-xl text-white ${editTarget ? 'bg-indigo-600' : 'bg-emerald-600'}`}>
-          {editTarget ? <UserCheck className="w-5 h-5" /> : <UserPlus className="w-5 h-5" />}
+        <div className={`p-2 rounded-xl text-white ${isEditingExisting ? 'bg-indigo-600' : 'bg-emerald-600'}`}>
+          {isEditingExisting ? <UserCheck className="w-5 h-5" /> : <UserPlus className="w-5 h-5" />}
         </div>
         <div>
           <h4 className="font-bold text-slate-800 text-lg font-display">
-            {editTarget ? 'Edit Directory Record' : 'Register Individual Contact'}
+            {isEditingExisting ? 'Edit Directory Record' : 'Register Individual Contact'}
           </h4>
           <p className="text-xs text-slate-500">
-            {editTarget ? `Modifying contact record ID #${editTarget.id}` : 'Fill in the details to create a new record'}
+            {isEditingExisting ? `Modifying contact record ID #${editTarget?.id}` : 'Fill in the details to create a new record'}
           </p>
         </div>
       </div>

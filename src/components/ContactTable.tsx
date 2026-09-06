@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Search, ChevronDown, ChevronUp, Edit2, Trash2, Eye, FileText, ArrowDownToLine, Loader2, Calendar, Phone, User, Clock, ChevronLeft, ChevronRight, Check, Folder, FolderOpen, ArrowLeft, Grid, List, Plus, Layers, Navigation, Upload, Image, UserCheck, ShieldCheck, CheckSquare, Square, BarChart3, AlertTriangle, CheckCircle2, Lock, ShieldAlert, X } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, Edit2, Trash2, Eye, FileText, ArrowDownToLine, Loader2, Calendar, Phone, User, Clock, ChevronLeft, ChevronRight, Check, Folder, FolderOpen, ArrowLeft, Grid, List, Plus, Layers, Navigation, Upload, Image, UserCheck, ShieldCheck, CheckSquare, Square, BarChart3, AlertTriangle, CheckCircle2, Lock, ShieldAlert, X, SearchX, UserX, UserPlus, RotateCcw } from 'lucide-react';
 import { Contact } from '../types.js';
 
 export const isContactLocked = (c: Contact | null | undefined): boolean => {
@@ -38,6 +38,7 @@ export interface PurokFolderInfo {
 interface ContactTableProps {
   authToken: string;
   onEdit: (contact: Contact) => void;
+  onAddNewContact?: (prefillName?: string) => void;
   onDeleted: () => void;
   showToast: (message: string, type: 'success' | 'warning' | 'error') => void;
   siteSettings?: {
@@ -94,6 +95,7 @@ const formatPurokName = (name: string | null | undefined): string => {
 export const ContactTable: React.FC<ContactTableProps> = ({
   authToken,
   onEdit,
+  onAddNewContact,
   onDeleted,
   showToast,
   siteSettings,
@@ -131,6 +133,7 @@ export const ContactTable: React.FC<ContactTableProps> = ({
   const [allAddresses, setAllAddresses] = useState<string[]>([]);
   const [allPuroks, setAllPuroks] = useState<string[]>([]);
   const [barangayFolders, setBarangayFolders] = useState<BarangayFolderInfo[]>([]);
+  const [overallBarangayFolders, setOverallBarangayFolders] = useState<BarangayFolderInfo[]>([]);
   const [purokFolders, setPurokFolders] = useState<PurokFolderInfo[]>([]);
   const [folderGrouping, setFolderGrouping] = useState<'barangay' | 'purok'>('barangay');
   const [associatedBarangayForPuroks, setAssociatedBarangayForPuroks] = useState<string | null>(null);
@@ -799,11 +802,17 @@ export const ContactTable: React.FC<ContactTableProps> = ({
             (f: BarangayFolderInfo) => f.barangay.trim().toLowerCase() === userBarangay.trim().toLowerCase()
           );
           setBarangayFolders(filtered);
+          if (!activeSearch) {
+            setOverallBarangayFolders(filtered);
+          }
         }
       } else {
         setAllAddresses(data.allAddresses || []);
         if (Array.isArray(data.barangayFolders)) {
           setBarangayFolders(data.barangayFolders);
+          if (!activeSearch) {
+            setOverallBarangayFolders(data.barangayFolders);
+          }
         }
       }
     } catch (err: any) {
@@ -1351,64 +1360,115 @@ export const ContactTable: React.FC<ContactTableProps> = ({
                   transition={{ duration: 0.2 }}
                   className="overflow-hidden"
                 >
-                  {/* Executive Summary Cards */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5">
-                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100/80">
-                      <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Barangays</p>
-                      <p className="text-2xl font-extrabold text-slate-800 font-display mt-1">
-                        {barangayFolders.length}
-                        <span className="text-slate-400 text-sm font-semibold ml-0.5">
-                          /{barangayFolders.reduce((sum, f) => sum + f.purokCount, 0)}
-                        </span>
-                      </p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">Active folders & puroks</p>
-                    </div>
+                  {(() => {
+                    const isSearchFiltered = Boolean(debouncedFolderSearch.trim());
+                    const displayFolders = isSearchFiltered 
+                      ? barangayFolders 
+                      : (overallBarangayFolders.length > 0 ? overallBarangayFolders : barangayFolders);
+                    const totalBarangaysCount = displayFolders.length;
+                    const totalPuroksCount = displayFolders.reduce((sum, f) => sum + (f.purokCount || 0), 0);
+                    const totalMembersCount = isSearchFiltered ? total : displayFolders.reduce((sum, f) => sum + f.count, 0);
 
-                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100/80">
-                      <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Members</p>
-                      <p className="text-2xl font-extrabold text-slate-800 font-display mt-1">
-                        {barangayFolders.reduce((sum, f) => sum + f.count, 0)}
-                      </p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">Across all folders</p>
-                    </div>
-                  </div>
-
-                  {/* Ultra-compact Barangay Folders Summary list with no progress bars */}
-                  <div className="mt-5 w-full bg-slate-50/30 rounded-2xl border border-slate-100 p-3 sm:p-4">
-                    {barangayFolders.length === 0 ? (
-                      <div className="h-[120px] flex flex-col items-center justify-center gap-2">
-                        <div className="w-8 h-8 border-3 border-emerald-200 border-t-emerald-600 rounded-full animate-spin" />
-                        <p className="text-xs text-slate-400 font-bold">Populating analytical data...</p>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-2 max-h-[300px] overflow-y-auto pr-1 scrollbar-thin">
-                        {[...barangayFolders].sort((a, b) => b.count - a.count || a.barangay.localeCompare(b.barangay)).map((f) => (
-                          <div 
-                            key={f.barangay} 
-                            className="flex items-center px-3 py-3 bg-white border border-slate-100 rounded-xl shadow-2xs hover:border-emerald-200/40 hover:shadow-xs transition-all h-[52px]"
-                          >
-                            <div className="flex flex-col min-w-0 gap-1 w-full">
-                              <span className="font-extrabold text-slate-700 text-xs truncate" title={f.barangay}>
-                                {f.barangay}
-                              </span>
-                              <div className="flex items-center gap-1.5 text-[9px] font-black tracking-wide leading-none">
-                                {(chartMetric === 'all' || chartMetric === 'households') && (
-                                  <span className="text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded-sm border border-emerald-100/50" title={`${f.count} Members`}>
-                                    {f.count} M
-                                  </span>
-                                )}
-                                {(chartMetric === 'all' || chartMetric === 'puroks') && (
-                                  <span className="text-amber-700 bg-amber-50 px-1 py-0.5 rounded-sm border border-amber-100/50" title={`${f.purokCount} Puroks`}>
-                                    {f.purokCount} P
-                                  </span>
-                                )}
-                              </div>
+                    return (
+                      <>
+                        {/* Executive Summary Cards */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5">
+                          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100/80">
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                                {isSearchFiltered ? 'Matching Barangays' : 'Total Barangays'}
+                              </p>
+                              {isSearchFiltered && (
+                                <span className="text-[10px] font-extrabold px-2 py-0.5 bg-amber-100 text-amber-800 rounded-md">
+                                  Search Result
+                                </span>
+                              )}
                             </div>
+                            <p className="text-2xl font-extrabold text-slate-800 font-display mt-1">
+                              {totalBarangaysCount}
+                              <span className="text-slate-400 text-sm font-semibold ml-0.5">
+                                /{totalPuroksCount}
+                              </span>
+                            </p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">
+                              {isSearchFiltered ? `Matching folders & puroks for "${folderSearch.trim()}"` : 'Active folders & puroks'}
+                            </p>
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+
+                          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100/80">
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                                {isSearchFiltered ? 'Matching Members' : 'Total Members'}
+                              </p>
+                              {isSearchFiltered && (
+                                <span className="text-[10px] font-extrabold px-2 py-0.5 bg-amber-100 text-amber-800 rounded-md">
+                                  Search Result
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-2xl font-extrabold text-slate-800 font-display mt-1">
+                              {totalMembersCount}
+                            </p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">
+                              {isSearchFiltered ? `Members found matching "${folderSearch.trim()}"` : 'Across all folders'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Ultra-compact Barangay Folders Summary list with no progress bars */}
+                        <div className="mt-5 w-full bg-slate-50/30 rounded-2xl border border-slate-100 p-3 sm:p-4">
+                          {loading && displayFolders.length === 0 ? (
+                            <div className="h-[120px] flex flex-col items-center justify-center gap-2">
+                              <div className="w-8 h-8 border-3 border-emerald-200 border-t-emerald-600 rounded-full animate-spin" />
+                              <p className="text-xs text-slate-400 font-bold">Populating analytical data...</p>
+                            </div>
+                          ) : displayFolders.length === 0 ? (
+                            <div className="h-[90px] flex flex-col items-center justify-center gap-1.5 text-center text-slate-500 py-3">
+                              <SearchX className="w-5 h-5 text-slate-400" />
+                              <p className="text-xs font-bold text-slate-600">
+                                {isSearchFiltered ? `No barangays match "${folderSearch.trim()}"` : 'No barangays available'}
+                              </p>
+                              {isSearchFiltered && (
+                                <button
+                                  onClick={() => setFolderSearch('')}
+                                  className="text-[11px] text-emerald-700 hover:text-emerald-800 font-semibold underline cursor-pointer"
+                                >
+                                  Clear search to view all barangay analytics
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-2 max-h-[300px] overflow-y-auto pr-1 scrollbar-thin">
+                              {[...displayFolders].sort((a, b) => b.count - a.count || a.barangay.localeCompare(b.barangay)).map((f) => (
+                                <div 
+                                  key={f.barangay} 
+                                  className="flex items-center px-3 py-3 bg-white border border-slate-100 rounded-xl shadow-2xs hover:border-emerald-200/40 hover:shadow-xs transition-all h-[52px]"
+                                >
+                                  <div className="flex flex-col min-w-0 gap-1 w-full">
+                                    <span className="font-extrabold text-slate-700 text-xs truncate" title={f.barangay}>
+                                      {f.barangay}
+                                    </span>
+                                    <div className="flex items-center gap-1.5 text-[9px] font-black tracking-wide leading-none">
+                                      {(chartMetric === 'all' || chartMetric === 'households') && (
+                                        <span className="text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded-sm border border-emerald-100/50" title={`${f.count} Members`}>
+                                          {f.count} M
+                                        </span>
+                                      )}
+                                      {(chartMetric === 'all' || chartMetric === 'puroks') && (
+                                        <span className="text-amber-700 bg-amber-50 px-1 py-0.5 rounded-sm border border-amber-100/50" title={`${f.purokCount} Puroks`}>
+                                          {f.purokCount} P
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -1423,8 +1483,17 @@ export const ContactTable: React.FC<ContactTableProps> = ({
                 value={folderSearch}
                 onChange={(e) => setFolderSearch(e.target.value)}
                 placeholder="Search Barangay Folder name or contact name..."
-                className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:bg-white transition-all placeholder:text-slate-400"
+                className="w-full pl-10 pr-9 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:bg-white transition-all placeholder:text-slate-400"
               />
+              {folderSearch && (
+                <button
+                  onClick={() => setFolderSearch('')}
+                  className="absolute right-2.5 top-2.5 p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-200/50 rounded-full transition-colors cursor-pointer"
+                  title="Clear search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
 
             <div className="flex flex-row flex-wrap items-center gap-3 w-full md:w-auto justify-between md:justify-end">
@@ -1475,66 +1544,225 @@ export const ContactTable: React.FC<ContactTableProps> = ({
             </div>
           </div>
 
-          {/* Barangay Folders Cards Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 pt-4">
-            {filteredFolders.map((folder) => {
-              const assignedAccounts = userAccounts.filter(
-                u => u.barangay && u.barangay.trim().toLowerCase() === folder.barangay.trim().toLowerCase()
-              );
-              const assignedCount = assignedAccounts.length;
-              const isUserDesignated = userBarangay && userBarangay.trim().toLowerCase() === folder.barangay.trim().toLowerCase();
-              const isHighlighted = lastOpenedBarangay === folder.barangay;
-              
-              return (
-                <motion.div
-                  key={folder.barangay}
-                  whileHover={{ y: -2, transition: { duration: 0.12 } }}
-                  onClick={() => openFolder(folder.barangay)}
-                  className="relative cursor-pointer group flex flex-col h-full min-h-[110px] w-full select-none"
-                >
-                  {/* Physical Folder Body */}
-                  <div className={`flex-1 rounded-xl shadow-2xs group-hover:shadow-xs group-hover:border-emerald-300 transition-all duration-300 p-3 flex flex-col justify-between relative overflow-hidden z-0 ${
-                    isHighlighted
-                      ? 'folder-highlight-active bg-emerald-50/25 border-emerald-500 shadow-md scale-[1.015]'
-                      : 'bg-amber-50/10 hover:bg-amber-50/25 border border-amber-300/40'
-                  }`}>
-                    {/* Barangay Details */}
-                    <div className="space-y-2">
-                      <h3 className={`text-sm font-extrabold font-display transition-colors truncate ${
-                        isHighlighted
-                          ? 'text-emerald-900 group-hover:text-emerald-800'
-                          : 'text-slate-800 group-hover:text-emerald-800'
-                      }`}>
-                        {folder.barangay}
-                      </h3>
-                      
-                      {/* Count Badge matching the user's uploaded image */}
-                      <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 border rounded-full text-[11px] font-bold w-fit bg-emerald-50/80 border-emerald-200/60 text-emerald-800">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 inline-block shrink-0"></span>
-                        <span>{folder.count} {folder.count === 1 ? 'Contact' : 'Contacts'}</span>
+          {/* Direct Matching Contacts list when search term is entered */}
+          {debouncedFolderSearch.trim() !== '' && contacts.length > 0 && (
+            <div className="bg-white border border-emerald-200/80 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-800">
+                    <UserCheck className="w-4 h-4" />
+                  </div>
+                  <h4 className="text-sm font-extrabold text-slate-800">
+                    Matching Contacts Found ({total})
+                  </h4>
+                </div>
+                <span className="text-xs text-slate-400 font-medium">Click any contact to view details or open their folder</span>
+              </div>
+
+              <div className="divide-y divide-slate-100 rounded-xl border border-slate-200/70 overflow-hidden">
+                {contacts.map((contact) => {
+                  const isLocked = isContactLocked(contact);
+                  return (
+                    <div
+                      key={contact.id}
+                      onClick={() => setViewContact(contact)}
+                      className={`p-3 sm:p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 cursor-pointer transition-colors ${
+                        isLocked ? 'bg-emerald-50/20' : ''
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`w-8 h-8 rounded-full ${
+                          isLocked ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-slate-100 text-slate-700'
+                        } font-bold text-xs flex items-center justify-center shrink-0`}>
+                          {isLocked ? <Lock className="w-3.5 h-3.5" /> : (contact.full_name?.charAt(0)?.toUpperCase() || '?')}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-extrabold text-slate-800 truncate">{contact.full_name}</span>
+                            {isLocked && (
+                              <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-900 border border-emerald-300">
+                                Submitted &amp; Locked
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5 flex-wrap">
+                            <span className="font-bold text-emerald-700">{contact.barangay || 'No Barangay'}</span>
+                            <span>•</span>
+                            <span className="font-medium text-slate-600">{contact.purok || 'No Purok'}</span>
+                            {contact.contact_number && (
+                              <>
+                                <span>•</span>
+                                <span className="font-mono text-slate-600">{contact.contact_number}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center" onClick={(e) => e.stopPropagation()}>
+                        {contact.barangay && (
+                          <button
+                            onClick={() => {
+                              openFolder(contact.barangay!);
+                              setHighlightedContactId(contact.id);
+                            }}
+                            className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                            title={`Open Barangay ${contact.barangay} folder`}
+                          >
+                            <FolderOpen className="w-3.5 h-3.5" />
+                            <span>Open Folder</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setViewContact(contact)}
+                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>View</span>
+                        </button>
+                        {!isLocked && (
+                          <button
+                            onClick={() => onEdit(contact)}
+                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                            <span>Edit</span>
+                          </button>
+                        )}
                       </div>
                     </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
-                    {/* Folder Action Bar */}
-                    {isAdmin && (
-                      <div className="mt-2 pt-1.5 border-t border-amber-200/20 group-hover:border-emerald-200/20 flex items-center justify-end z-10">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDeleteFolderTarget(folder.barangay);
-                          }}
-                          className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
-                          title={`Delete folder ${folder.barangay} & all its members`}
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+          {/* Barangay Folders Cards Grid */}
+          {filteredFolders.length > 0 && (
+            <div className="space-y-2">
+              {debouncedFolderSearch.trim() !== '' && (
+                <div className="flex items-center gap-2 px-1 pt-2">
+                  <Folder className="w-4 h-4 text-emerald-600" />
+                  <h4 className="text-xs font-extrabold text-slate-600 uppercase tracking-wider">
+                    Matching Barangay Folders ({filteredFolders.length})
+                  </h4>
+                </div>
+              )}
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 pt-2">
+                {filteredFolders.map((folder) => {
+                  const assignedAccounts = userAccounts.filter(
+                    u => u.barangay && u.barangay.trim().toLowerCase() === folder.barangay.trim().toLowerCase()
+                  );
+                  const assignedCount = assignedAccounts.length;
+                  const isUserDesignated = userBarangay && userBarangay.trim().toLowerCase() === folder.barangay.trim().toLowerCase();
+                  const isHighlighted = lastOpenedBarangay === folder.barangay;
+                  
+                  return (
+                    <motion.div
+                      key={folder.barangay}
+                      whileHover={{ y: -2, transition: { duration: 0.12 } }}
+                      onClick={() => openFolder(folder.barangay)}
+                      className="relative cursor-pointer group flex flex-col h-full min-h-[110px] w-full select-none"
+                    >
+                      {/* Physical Folder Body */}
+                      <div className={`flex-1 rounded-xl shadow-2xs group-hover:shadow-xs group-hover:border-emerald-300 transition-all duration-300 p-3 flex flex-col justify-between relative overflow-hidden z-0 ${
+                        isHighlighted
+                          ? 'folder-highlight-active bg-emerald-50/25 border-emerald-500 shadow-md scale-[1.015]'
+                          : 'bg-amber-50/10 hover:bg-amber-50/25 border border-amber-300/40'
+                      }`}>
+                        {/* Barangay Details */}
+                        <div className="space-y-2">
+                          <h3 className={`text-sm font-extrabold font-display transition-colors truncate ${
+                            isHighlighted
+                              ? 'text-emerald-900 group-hover:text-emerald-800'
+                              : 'text-slate-800 group-hover:text-emerald-800'
+                          }`}>
+                            {folder.barangay}
+                          </h3>
+                          
+                          {/* Count Badge matching the user's uploaded image */}
+                          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 border rounded-full text-[11px] font-bold w-fit bg-emerald-50/80 border-emerald-200/60 text-emerald-800">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 inline-block shrink-0"></span>
+                            <span>{folder.count} {folder.count === 1 ? 'Contact' : 'Contacts'}</span>
+                          </div>
+                        </div>
+
+                        {/* Folder Action Bar */}
+                        {isAdmin && (
+                          <div className="mt-2 pt-1.5 border-t border-amber-200/20 group-hover:border-emerald-200/20 flex items-center justify-end z-10">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteFolderTarget(folder.barangay);
+                              }}
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
+                              title={`Delete folder ${folder.barangay} & all its members`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                </motion.div>
-              );
-            })}
-          </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Empty Search / No Records State */}
+          {filteredFolders.length === 0 && contacts.length === 0 && (
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-8 sm:p-12 text-center shadow-xs max-w-xl mx-auto my-4">
+              <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 border border-amber-200/60 flex items-center justify-center mx-auto mb-3.5">
+                <UserX className="w-7 h-7" />
+              </div>
+              <h3 className="text-base sm:text-lg font-extrabold text-slate-800">
+                {debouncedFolderSearch.trim()
+                  ? `No records found for "${folderSearch.trim()}"`
+                  : 'No Barangay Folders Available'}
+              </h3>
+              <p className="text-xs sm:text-sm text-slate-500 mt-1.5 max-w-md mx-auto leading-relaxed">
+                {debouncedFolderSearch.trim()
+                  ? `"${folderSearch.trim()}" is not registered in any Barangay folder. You can add them as a new member right now.`
+                  : 'Get started by creating your first folder or importing member records.'}
+              </p>
+
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 mt-6">
+                {debouncedFolderSearch.trim() && (
+                  <button
+                    onClick={() => {
+                      if (onAddNewContact) {
+                        onAddNewContact(folderSearch.trim());
+                      } else {
+                        onEdit({
+                          id: '',
+                          full_name: folderSearch.trim(),
+                          barangay: availableBarangays[0] || '',
+                          purok: '',
+                          contact_number: '',
+                          status: 'AVAILABLE',
+                          created_at: new Date().toISOString()
+                        });
+                      }
+                    }}
+                    className="w-full sm:w-auto px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-sm"
+                  >
+                    <UserPlus className="w-4 h-4 text-emerald-200" />
+                    <span>+ Add "{folderSearch.trim()}" as New Member</span>
+                  </button>
+                )}
+                {debouncedFolderSearch.trim() && (
+                  <button
+                    onClick={() => setFolderSearch('')}
+                    className="w-full sm:w-auto px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Clear Search</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1576,35 +1804,24 @@ export const ContactTable: React.FC<ContactTableProps> = ({
                   type="text"
                   value={purokSearch}
                   onChange={(e) => setPurokSearch(e.target.value)}
-                  placeholder="Search Purok Folder name or contact name alphabetically..."
-                  className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:bg-white transition-all placeholder:text-slate-400"
+                  placeholder="Search Purok Folder name or contact name..."
+                  className="w-full pl-10 pr-9 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 outline-none focus:border-emerald-500 focus:bg-white transition-all placeholder:text-slate-400"
                 />
+                {purokSearch && (
+                  <button
+                    onClick={() => setPurokSearch('')}
+                    className="absolute right-2.5 top-2.5 p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-200/50 rounded-full transition-colors cursor-pointer"
+                    title="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
 
               <div className="flex items-center gap-3">
                 <div className="text-xs font-bold text-slate-500 flex items-center gap-2">
                   <Layers className="w-4 h-4 text-emerald-600" />
-                  <span>{filteredPurokFolders.filter(f => {
-                    const searchLower = purokSearch.toLowerCase().trim();
-                    if (!searchLower) return true;
-                    const matchPurok = f.purok.toLowerCase().includes(searchLower);
-                    const matchContact = contacts.some(c => {
-                      const cBg = (c.barangay || '').trim().toLowerCase();
-                      const fBg = associatedBarangayForPuroks ? associatedBarangayForPuroks.trim().toLowerCase() : '';
-                      const isNoAddressFolder = fBg === 'no address';
-                      const isContactNoAddress = !cBg || cBg === 'no address' || cBg === 'no barangay';
-                      
-                      const matchesBarangayFilter = !associatedBarangayForPuroks || 
-                        (isNoAddressFolder ? isContactNoAddress : (cBg === fBg));
-
-                      const cPur = (c.purok || '').trim().toLowerCase();
-                      const fPur = f.purok.trim().toLowerCase();
-                      return matchesBarangayFilter &&
-                        cPur === fPur && 
-                        c.full_name.toLowerCase().includes(searchLower);
-                    });
-                    return matchPurok || matchContact;
-                  }).length} Purok Folders</span>
+                  <span>{filteredPurokFolders.length} Purok Folders</span>
                 </div>
               </div>
             </div>
@@ -1619,50 +1836,205 @@ export const ContactTable: React.FC<ContactTableProps> = ({
             )}
           </div>
 
-          {/* Purok Folders Cards Grid arranged by highest population */}
-          <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pt-4">
-            {filteredPurokFolders
-              .filter(f => {
-                // Server-side has already filtered the folders list based on the search term (including contact names).
-                return true;
-              })
-              .sort((a, b) => b.count - a.count || a.purok.localeCompare(b.purok))
-              .map((folder) => {
-                const isHighlighted = lastOpenedPurok === folder.purok;
-                return (
-                  <motion.div
-                    key={folder.purok}
-                    whileHover={{ y: -2, transition: { duration: 0.12 } }}
-                    onClick={() => handleSetActivePurokFolder(folder.purok)}
-                    className="relative cursor-pointer group flex flex-col h-full min-h-[110px] w-full select-none"
-                  >
-                    {/* Physical Folder Body */}
-                    <div className={`flex-1 rounded-xl shadow-2xs group-hover:shadow-xs group-hover:border-emerald-300 transition-all duration-300 p-3 flex flex-col justify-between relative overflow-hidden z-0 ${
-                      isHighlighted
-                        ? 'folder-highlight-active bg-emerald-50/25 border-emerald-500 shadow-md scale-[1.015]'
-                        : 'bg-amber-50/10 hover:bg-amber-50/25 border border-amber-300/40'
-                    }`}>
-                      {/* Purok Details */}
-                      <div className="space-y-2">
-                        <h3 className={`text-sm font-extrabold font-display transition-colors truncate ${
-                          isHighlighted
-                            ? 'text-emerald-900 group-hover:text-emerald-800'
-                            : 'text-slate-800 group-hover:text-emerald-800'
-                        }`}>
-                          {formatPurokName(folder.purok)}
-                        </h3>
-                        
-                        {/* Count Badge matching the user's uploaded image */}
-                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 border rounded-full text-[11px] font-bold w-fit bg-emerald-50/80 border-emerald-200/60 text-emerald-800">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 inline-block shrink-0"></span>
-                          <span>{folder.count} {folder.count === 1 ? 'Contact' : 'Contacts'}</span>
+          {/* Direct Matching Contacts list when search term is entered */}
+          {debouncedPurokSearch.trim() !== '' && contacts.length > 0 && (
+            <div className="bg-white border border-emerald-200/80 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-800">
+                    <UserCheck className="w-4 h-4" />
+                  </div>
+                  <h4 className="text-sm font-extrabold text-slate-800">
+                    Matching Contacts Found ({total})
+                  </h4>
+                </div>
+                <span className="text-xs text-slate-400 font-medium">Click any contact to view details or open their purok folder</span>
+              </div>
+
+              <div className="divide-y divide-slate-100 rounded-xl border border-slate-200/70 overflow-hidden">
+                {contacts.map((contact) => {
+                  const isLocked = isContactLocked(contact);
+                  return (
+                    <div
+                      key={contact.id}
+                      onClick={() => setViewContact(contact)}
+                      className={`p-3 sm:p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50 cursor-pointer transition-colors ${
+                        isLocked ? 'bg-emerald-50/20' : ''
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`w-8 h-8 rounded-full ${
+                          isLocked ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-slate-100 text-slate-700'
+                        } font-bold text-xs flex items-center justify-center shrink-0`}>
+                          {isLocked ? <Lock className="w-3.5 h-3.5" /> : (contact.full_name?.charAt(0)?.toUpperCase() || '?')}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-extrabold text-slate-800 truncate">{contact.full_name}</span>
+                            {isLocked && (
+                              <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-900 border border-emerald-300">
+                                Submitted &amp; Locked
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5 flex-wrap">
+                            <span className="font-bold text-emerald-700">{contact.barangay || 'No Barangay'}</span>
+                            <span>•</span>
+                            <span className="font-medium text-slate-600">{contact.purok || 'No Purok'}</span>
+                            {contact.contact_number && (
+                              <>
+                                <span>•</span>
+                                <span className="font-mono text-slate-600">{contact.contact_number}</span>
+                              </>
+                            )}
+                          </div>
                         </div>
                       </div>
+
+                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-center" onClick={(e) => e.stopPropagation()}>
+                        {contact.purok && (
+                          <button
+                            onClick={() => {
+                              handleSetActivePurokFolder(contact.purok!);
+                              setHighlightedContactId(contact.id);
+                            }}
+                            className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                            title={`Open Purok ${contact.purok} folder`}
+                          >
+                            <FolderOpen className="w-3.5 h-3.5" />
+                            <span>Open Folder</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setViewContact(contact)}
+                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>View</span>
+                        </button>
+                        {!isLocked && (
+                          <button
+                            onClick={() => onEdit(contact)}
+                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                            <span>Edit</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  </motion.div>
-                );
-              })}
-          </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Purok Folders Cards Grid arranged by highest population */}
+          {filteredPurokFolders.length > 0 && (
+            <div className="space-y-2">
+              {debouncedPurokSearch.trim() !== '' && (
+                <div className="flex items-center gap-2 px-1 pt-2">
+                  <Folder className="w-4 h-4 text-emerald-600" />
+                  <h4 className="text-xs font-extrabold text-slate-600 uppercase tracking-wider">
+                    Matching Purok Folders ({filteredPurokFolders.length})
+                  </h4>
+                </div>
+              )}
+              <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pt-2">
+                {filteredPurokFolders
+                  .sort((a, b) => b.count - a.count || a.purok.localeCompare(b.purok))
+                  .map((folder) => {
+                    const isHighlighted = lastOpenedPurok === folder.purok;
+                    return (
+                      <motion.div
+                        key={folder.purok}
+                        whileHover={{ y: -2, transition: { duration: 0.12 } }}
+                        onClick={() => handleSetActivePurokFolder(folder.purok)}
+                        className="relative cursor-pointer group flex flex-col h-full min-h-[110px] w-full select-none"
+                      >
+                        {/* Physical Folder Body */}
+                        <div className={`flex-1 rounded-xl shadow-2xs group-hover:shadow-xs group-hover:border-emerald-300 transition-all duration-300 p-3.5 flex flex-col justify-between relative overflow-hidden z-0 ${
+                          isHighlighted
+                            ? 'folder-highlight-active bg-emerald-50/25 border-emerald-500 shadow-md scale-[1.015]'
+                            : 'bg-amber-50/10 hover:bg-amber-50/25 border border-amber-300/40'
+                        }`}>
+                          {/* Purok Details */}
+                          <div className="space-y-2">
+                            <h3 className={`text-sm font-extrabold font-display transition-colors truncate ${
+                              isHighlighted
+                                ? 'text-emerald-900 group-hover:text-emerald-800'
+                                : 'text-slate-800 group-hover:text-emerald-800'
+                            }`}>
+                              {formatPurokName(folder.purok)}
+                            </h3>
+                            
+                            {/* Count Badge matching the user's uploaded image */}
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 border rounded-full text-[11px] font-bold w-fit bg-emerald-50/80 border-emerald-200/60 text-emerald-800">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 inline-block shrink-0"></span>
+                              <span>{folder.count} {folder.count === 1 ? 'Contact' : 'Contacts'}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
+          {/* Empty Search / No Purok Records State */}
+          {filteredPurokFolders.length === 0 && contacts.length === 0 && (
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-8 sm:p-12 text-center shadow-xs max-w-xl mx-auto my-4">
+              <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 border border-amber-200/60 flex items-center justify-center mx-auto mb-3.5">
+                <UserX className="w-7 h-7" />
+              </div>
+              <h3 className="text-base sm:text-lg font-extrabold text-slate-800">
+                {debouncedPurokSearch.trim()
+                  ? `No records found for "${purokSearch.trim()}"`
+                  : 'No Purok Folders Available'}
+              </h3>
+              <p className="text-xs sm:text-sm text-slate-500 mt-1.5 max-w-md mx-auto leading-relaxed">
+                {debouncedPurokSearch.trim()
+                  ? `"${purokSearch.trim()}" does not match any registered member or Purok folder name. You can add them as a new member now.`
+                  : 'Get started by creating your first folder or importing member records.'}
+              </p>
+
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 mt-6">
+                {debouncedPurokSearch.trim() && (
+                  <button
+                    onClick={() => {
+                      if (onAddNewContact) {
+                        onAddNewContact(purokSearch.trim());
+                      } else {
+                        onEdit({
+                          id: '',
+                          full_name: purokSearch.trim(),
+                          barangay: associatedBarangayForPuroks || availableBarangays[0] || '',
+                          purok: '',
+                          contact_number: '',
+                          status: 'AVAILABLE',
+                          created_at: new Date().toISOString()
+                        });
+                      }
+                    }}
+                    className="w-full sm:w-auto px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2 shadow-sm"
+                  >
+                    <UserPlus className="w-4 h-4 text-emerald-200" />
+                    <span>+ Add "{purokSearch.trim()}" as New Member</span>
+                  </button>
+                )}
+                {debouncedPurokSearch.trim() && (
+                  <button
+                    onClick={() => setPurokSearch('')}
+                    className="w-full sm:w-auto px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs sm:text-sm rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Clear Search</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1678,9 +2050,18 @@ export const ContactTable: React.FC<ContactTableProps> = ({
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 focus:border-emerald-500 rounded-xl transition-all text-slate-800 text-sm font-medium outline-none placeholder:text-slate-400 min-h-[42px]"
+                className="w-full pl-10 pr-9 py-2.5 bg-slate-50 border border-slate-200 focus:border-emerald-500 rounded-xl transition-all text-slate-800 text-sm font-medium outline-none placeholder:text-slate-400 min-h-[42px]"
                 placeholder={`Search inside ${activeFolder || activePurokFolder}...`}
               />
+              {search && (
+                <button
+                  onClick={() => setSearch('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-200/50 rounded-full transition-colors cursor-pointer"
+                  title="Clear search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
 
             {/* Filter Dropdown + Export buttons */}

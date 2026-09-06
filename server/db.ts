@@ -3408,13 +3408,7 @@ export async function getContacts(params: {
     const isSubmitted = Boolean(c.locked || c.status === 'SUBMITTED' || c.isSubmitted || c.submittedToBase44);
     const isGeotagged = Boolean(c.geotagged);
 
-    const contactMatchesTerm = Boolean(
-      term && (
-        (c.full_name || '').toLowerCase().includes(term) ||
-        (c.contact_number || '').includes(term) ||
-        (c.purok || '').toLowerCase().includes(term)
-      )
-    );
+    const contactMatchesTerm = Boolean(term && contactMatchesSearch(c, term));
 
     // Update Barangay Stats
     let bEntry = bgStats.get(canonBg);

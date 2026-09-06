@@ -248,7 +248,7 @@ export default function App() {
 
   // Directory Table Action Triggers
   const [isFormOpen, setIsFormOpen] = useState(false);
-  const [editTarget, setEditTarget] = useState<Contact | null>(null);
+  const [editTarget, setEditTarget] = useState<Contact | Partial<Contact> | null>(null);
   const [mapNavigateContact, setMapNavigateContact] = useState<Contact | null>(null);
 
   // Stats State
@@ -534,8 +534,8 @@ export default function App() {
     if (!authToken) return false;
 
     try {
-      const isEdit = editTarget !== null;
-      const url = isEdit ? `/api/contacts/${editTarget.id}` : '/api/contacts';
+      const isEdit = Boolean(editTarget && 'id' in editTarget && (editTarget as Contact).id);
+      const url = isEdit ? `/api/contacts/${(editTarget as Contact).id}` : '/api/contacts';
       const method = isEdit ? 'PUT' : 'POST';
 
       const res = await fetch(url, {
@@ -568,6 +568,16 @@ export default function App() {
       showToast(err.message, 'error');
       return false;
     }
+  };
+
+  const handleAddNewContact = (prefillName?: string) => {
+    if (prefillName) {
+      setEditTarget({ full_name: prefillName } as Partial<Contact>);
+    } else {
+      setEditTarget(null);
+    }
+    setIsFormOpen(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleEditTrigger = (contact: Contact) => {
@@ -1037,6 +1047,7 @@ export default function App() {
                   authToken={authToken}
                   lastSyncTime={lastSyncTime}
                   onEdit={handleEditTrigger}
+                  onAddNewContact={handleAddNewContact}
                   onDeleted={fetchStats}
                   showToast={showToast}
                   siteSettings={siteSettings}
