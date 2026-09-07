@@ -656,39 +656,19 @@ export const ContactTable: React.FC<ContactTableProps> = ({
       const memberName = viewContact.full_name;
       const filesCount = stagedPcuFiles.length;
 
-      // Update contact in directory table to permanently locked & SUBMITTED state
-      const updatedLockedContact: Contact = {
-        ...viewContact,
-        ...(lastResponseData && typeof lastResponseData === 'object' ? lastResponseData : {}),
-        isSubmitted: true,
-        status: 'SUBMITTED',
-        locked: true,
-        submittedToBase44: true,
-        submittedAt: new Date().toISOString()
-      };
-
-      setContacts(prev => {
-        const next = prev.map(c => 
-          (c.id === submittedContactId || (c.full_name && c.full_name.trim().toLowerCase() === submittedName))
-            ? { ...c, ...updatedLockedContact }
-            : c
-        );
-        return next.sort((a, b) => {
-          const aLocked = isContactLocked(a);
-          const bLocked = isContactLocked(b);
-          if (!aLocked && bLocked) return -1;
-          if (aLocked && !bLocked) return 1;
-          return 0;
-        });
-      });
+      // Permanently remove submitted contact from directory table
+      setContacts(prev => prev.filter(c => 
+        c.id !== submittedContactId && 
+        (!c.full_name || c.full_name.trim().toLowerCase() !== submittedName)
+      ));
 
       setViewContact(null);
       setStagedPcuFiles([]);
       fetchContacts();
       if (lastResponseData?.sheetsSyncWarning) {
-        showToast(`Submitted "${memberName}" (${filesCount} file(s)) to Base44 database! Contact is now permanently locked as SUBMITTED.`, 'warning');
+        showToast(`Submitted "${memberName}" (${filesCount} file(s)) to Base44 database and permanently deleted from PCU Directory. (${lastResponseData.sheetsSyncWarning})`, 'warning');
       } else {
-        showToast(`Successfully submitted "${memberName}" (${filesCount} file(s)) to Base44 database! Contact is now permanently locked and marked as SUBMITTED.`, 'success');
+        showToast(`Successfully submitted "${memberName}" (${filesCount} file(s)) to Base44 database and permanently deleted from PCU Directory and Google Sheets database!`, 'success');
       }
     } catch (err: any) {
       showToast(err.message, 'error');
@@ -778,15 +758,8 @@ export const ContactTable: React.FC<ContactTableProps> = ({
       }
 
       const rawContacts: Contact[] = data.contacts || [];
-      const sortedContacts = [...rawContacts].sort((a, b) => {
-        const aLocked = isContactLocked(a);
-        const bLocked = isContactLocked(b);
-        if (!aLocked && bLocked) return -1;
-        if (aLocked && !bLocked) return 1;
-        return 0;
-      });
-
-      setContacts(sortedContacts);
+      const visibleContacts = rawContacts.filter(c => !isContactLocked(c));
+      setContacts(visibleContacts);
       setTotal(data.total || 0);
       setTotalPages(data.totalPages || 1);
       setAllPuroks(data.allPuroks || []);

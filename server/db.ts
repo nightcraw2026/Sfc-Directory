@@ -1126,9 +1126,9 @@ export async function initDb() {
         if (updated) migrated = true;
         return anyC as Contact;
       });
-      // Deduplicate contacts and preserve active and submitted contacts in PCU directory
+      // Deduplicate contacts and filter out deleted, tombstoned, and submitted contacts
       contactsCache = deduplicateContactsByName(
-        contactsCache.filter(c => c && !c.deleted_at && !isContactTombstoned(c) && !isBarangayTombstoned(c.barangay))
+        contactsCache.filter(c => c && !c.deleted_at && !isContactTombstoned(c) && !isBarangayTombstoned(c.barangay) && !isContactSubmitted(c))
       );
       syncPCUFieldsToCache();
       safeWriteFileSync(CONTACTS_FILE, JSON.stringify(contactsCache, null, 2));
@@ -1185,9 +1185,9 @@ export async function initDb() {
       }
     }
 
-    // Restore PCU statuses onto contacts in contactsCache if we have PCU update records
+    // Prune any submitted contacts from contactsCache so they are not displayed in PCU Directory
     syncPCUFieldsToCache();
-    console.log(`[Init] Restored PCU statuses for contacts from local PCU updates cache.`);
+    console.log(`[Init] Filtered submitted contacts so they are omitted from PCU Directory.`);
     safeWriteFileSync(CONTACTS_FILE, JSON.stringify(contactsCache, null, 2));
 
     // Init Existing Accounts
@@ -3065,11 +3065,12 @@ export function isContactSubmitted(c: Contact): boolean {
   return false;
 }
 
-// Helper to filter all active contacts for PCU Directory (both available and submitted)
+// Helper to filter all active contacts for PCU Directory (only available, never submitted to Base44)
 export function isContactForDirectory(c: Contact): boolean {
   if (!c || c.deleted_at) return false;
   if (c.added_from_print_list === false) return false;
   if (isContactTombstoned(c)) return false;
+  if (isContactSubmitted(c)) return false;
   return true;
 }
 
@@ -3686,7 +3687,7 @@ export async function saveContactToBase44(contact: Contact, username: string): P
         fileUrl: f.url,
         size: 0
       })),
-      isSubmitted: true,
+      isSubmitted: Boolean(contact.isSubmitted || contact.pcu_file_url || (contact.uploadedFiles && contact.uploadedFiles.length > 0)),
       submittedAt: contact.pcu_uploaded_at || new Date().toISOString(),
       pcu_file_url: contact.pcu_file_url || '',
       pcu_uploaded_by: contact.pcu_uploaded_by || uName,
@@ -4295,20 +4296,25 @@ export async function deleteContactPermanentlyFromGoogleSheets(contact: {
         }
       }
 
-      // 2. Match by Name and Barangay (or Name)
+      // 2. Match by Name
       if (!isMatch && targetName && rName && (normalizeCompareName(rName, targetName) || targetName.toLowerCase() === rName.toLowerCase())) {
-        if (targetBarangay && rBarangay) {
-          if (isBarangayMatch(rBarangay, targetBarangay) || normalizeBarangayName(rBarangay).toLowerCase() === normalizeBarangayName(targetBarangay).toLowerCase()) {
-            isMatch = true;
-          }
-        } else {
-          isMatch = true;
-        }
+        isMatch = true;
       }
 
       // 3. Match by Contact Number and Name similarity
       if (!isMatch && targetNumber && rNumber && targetNumber === rNumber && targetName && rName && normalizeCompareName(rName, targetName)) {
         isMatch = true;
+      }
+
+      // 4. Fallback search across any cell in the row for targetName
+      if (!isMatch && targetName) {
+        for (const cell of row) {
+          const val = (cell || '').toString().trim();
+          if (val && (normalizeCompareName(val, targetName) || val.toLowerCase() === targetName.toLowerCase())) {
+            isMatch = true;
+            break;
+          }
+        }
       }
 
       if (isMatch) {
@@ -5398,60 +5404,17 @@ export async function syncPCUUpdatesFromBase44(force: boolean = false): Promise<
 export function syncPCUFieldsToCache() {
   if (!Array.isArray(contactsCache)) return;
 
-  // 1. Sync from pcuUpdatesCache into contactsCache (without clearing valid existing fields)
-  if (Array.isArray(pcuUpdatesCache)) {
-    pcuUpdatesCache.forEach(update => {
-      if (!update) return;
-
-      const contact = contactsCache.find(c =>
-        (c.id && update.contactId && c.id.toString() === update.contactId.toString()) ||
-        (normalizeCompareName(c.full_name, update.fullName) &&
-         (!update.barangay || normalizeBarangayName(c.barangay).toLowerCase() === normalizeBarangayName(update.barangay).toLowerCase()))
-      );
-
-      if (contact) {
-        contact.isSubmitted = true;
-        contact.status = 'SUBMITTED';
-        contact.locked = true;
-        contact.submittedToBase44 = true;
-        if (!contact.submittedAt) {
-          contact.submittedAt = update.uploadedAt;
-        }
-        if (!contact.pcu_file_url) {
-          contact.pcu_file_url = update.fileData || `Uploaded: ${update.fileName}`;
-        }
-        if (!contact.pcu_uploaded_by) {
-          contact.pcu_uploaded_by = update.uploadedBy;
-        }
-        if (!contact.pcu_uploaded_at) {
-          contact.pcu_uploaded_at = update.uploadedAt;
-        }
-        contact.uploadedFiles = contact.uploadedFiles || [];
-        const fileExists = contact.uploadedFiles.some(f => f.name === update.fileName || (update.fileData && f.url === update.fileData));
-        if (!fileExists && update.fileName) {
-          contact.uploadedFiles.push({
-            name: update.fileName,
-            url: update.fileData || '',
-            uploadedAt: update.uploadedAt,
-            uploadedBy: update.uploadedBy
-          });
-        }
-      }
-    });
-  }
-
-  // 2. Ensure every contact in contactsCache that is submitted has locked and SUBMITTED status normalized
-  for (const c of contactsCache) {
-    if (!c) continue;
-    if (isContactSubmitted(c)) {
-      c.isSubmitted = true;
-      c.status = 'SUBMITTED';
-      c.locked = true;
-      c.submittedToBase44 = true;
-      if (!c.submittedAt && c.pcu_uploaded_at) {
-        c.submittedAt = c.pcu_uploaded_at;
-      }
+  // Prune any contacts from contactsCache that have been submitted to Base44 or tombstoned
+  const initialLen = contactsCache.length;
+  contactsCache = contactsCache.filter(c => {
+    if (!c) return false;
+    if (isContactSubmitted(c) || isContactTombstoned(c)) {
+      return false;
     }
+    return true;
+  });
+  if (contactsCache.length !== initialLen) {
+    safeWriteFile(CONTACTS_FILE, JSON.stringify(contactsCache, null, 2), 'utf-8').catch(() => {});
   }
 }
 
@@ -5736,41 +5699,23 @@ export async function syncWithGoogleSheets(username: string): Promise<{ success:
     // Check if this contact has already been submitted to Base44 database
     const isAlreadySubmitted = (existingLocal && isContactSubmitted(existingLocal)) || Boolean(matchedUpdate) || isContactSubmitted({ id, full_name: formattedName, barangay: formattedBarangay, contact_number: rawNumber } as any);
     if (isAlreadySubmitted) {
-      const pcuFileUrl = (pcuIdx !== -1 && row[pcuIdx]) ? row[pcuIdx] : ((existingLocal && existingLocal.pcu_file_url) || (matchedUpdate && (matchedUpdate.fileData || `Uploaded: ${matchedUpdate.fileName}`)));
-      const pcuUploadedBy = (existingLocal && existingLocal.pcu_uploaded_by) || (matchedUpdate && matchedUpdate.uploadedBy) || 'Admin';
-      const pcuUploadedAt = (existingLocal && (existingLocal.submittedAt || existingLocal.pcu_uploaded_at)) || (matchedUpdate && matchedUpdate.uploadedAt) || new Date().toISOString();
-      const photoUrl = (photoIdx !== -1 && row[photoIdx]) ? row[photoIdx] : (existingLocal ? existingLocal.photo_url : undefined);
-
-      newContacts.push({
-        id: existingLocal ? existingLocal.id : id,
-        full_name: formattedName,
-        barangay: formattedBarangay,
-        purok: rawPurok ? capitalizeWords(rawPurok) : (existingLocal ? existingLocal.purok : ''),
-        contact_number: rawNumber.toString().trim(),
-        created_at: existingLocal ? existingLocal.created_at : createdAt,
-        updated_at: existingLocal ? existingLocal.updated_at : updatedAt,
-        deleted_at: null,
-        latitude: latVal,
-        longitude: lngVal,
-        geotagged: (latVal !== undefined && lngVal !== undefined) || (existingLocal ? existingLocal.geotagged : false),
-        photo_url: photoUrl,
-        pcu_file_url: pcuFileUrl || undefined,
-        pcu_uploaded_by: pcuUploadedBy || undefined,
-        pcu_uploaded_at: pcuUploadedAt || undefined,
-        isSubmitted: true,
-        status: 'SUBMITTED',
-        locked: true,
-        submittedToBase44: true,
-        submittedAt: pcuUploadedAt,
-        uploadedFiles: existingLocal?.uploadedFiles || (pcuFileUrl ? [{
-          name: 'PCU Document',
-          url: pcuFileUrl,
-          uploadedAt: pcuUploadedAt,
-          uploadedBy: pcuUploadedBy
-        }] : []),
-        added_locally: false,
-        added_from_print_list: true
-      });
+      console.log(`[Google Sheets Sync] Contact "${formattedName}" is already submitted to Base44. Permanently deleting from Google Sheets and omitting from PCU Directory...`);
+      const targetId = existingLocal ? existingLocal.id : id;
+      if (!deletedContactsCache.some(d => 
+        (targetId && d.id && d.id.toString() === targetId.toString()) || 
+        (d.full_name && normalizeCompareName(d.full_name, formattedName))
+      )) {
+        deletedContactsCache.push({
+          id: targetId,
+          full_name: formattedName,
+          barangay: formattedBarangay,
+          deletedAt: new Date().toISOString(),
+          submitted_to_base44: true
+        });
+        safeWriteFile(DELETED_CONTACTS_FILE, JSON.stringify(deletedContactsCache, null, 2), 'utf-8').catch(() => {});
+        syncDeletedRecordsToGoogleSheets().catch(() => {});
+      }
+      deleteContactPermanentlyFromGoogleSheets({ id: targetId, full_name: formattedName, barangay: formattedBarangay, contact_number: rawNumber }).catch(() => {});
       continue;
     }
 
@@ -5785,6 +5730,10 @@ export async function syncWithGoogleSheets(username: string): Promise<{ success:
     }
 
     const pcuFileUrl = (pcuIdx !== -1 && row[pcuIdx]) ? row[pcuIdx] : ((existingLocal && existingLocal.pcu_file_url) || (matchedUpdate && (matchedUpdate.fileData || `Uploaded: ${matchedUpdate.fileName}`)));
+    if (pcuFileUrl || (existingLocal && isContactSubmitted(existingLocal))) {
+      deleteContactPermanentlyFromGoogleSheets({ id, full_name: formattedName, barangay: formattedBarangay, contact_number: rawNumber }).catch(() => {});
+      continue;
+    }
     const pcuUploadedBy = (existingLocal && existingLocal.pcu_uploaded_by) || (matchedUpdate && matchedUpdate.uploadedBy);
     const pcuUploadedAt = (existingLocal && existingLocal.pcu_uploaded_at) || (matchedUpdate && matchedUpdate.uploadedAt);
     const photoUrl = (photoIdx !== -1 && row[photoIdx]) ? row[photoIdx] : (existingLocal ? existingLocal.photo_url : undefined);
@@ -5814,7 +5763,7 @@ export async function syncWithGoogleSheets(username: string): Promise<{ success:
   const mergedContacts: Contact[] = [...newContacts];
   
   for (const lc of contactsCache) {
-    if (!lc || lc.deleted_at || isContactTombstoned(lc)) {
+    if (!lc || lc.deleted_at || isContactTombstoned(lc) || isContactSubmitted(lc)) {
       continue;
     }
     const alreadyExists = mergedContacts.some(mc => 
@@ -5824,8 +5773,8 @@ export async function syncWithGoogleSheets(username: string): Promise<{ success:
     );
     
     if (!alreadyExists) {
-      // Always retain local additions, submitted records, and active directory records
-      if (lc.added_locally || isContactSubmitted(lc) || lc.added_from_print_list !== false) {
+      // Retain active local additions and print list records that have not been submitted or tombstoned
+      if ((lc.added_locally || lc.added_from_print_list !== false) && !isContactSubmitted(lc) && !isContactTombstoned(lc)) {
         mergedContacts.push(lc);
       }
     } else {
@@ -5835,31 +5784,30 @@ export async function syncWithGoogleSheets(username: string): Promise<{ success:
          normalizeBarangayName(mc.barangay).toLowerCase() === normalizeBarangayName(lc.barangay).toLowerCase())
       );
       if (targetIndex !== -1) {
-        const isSub = Boolean(lc.isSubmitted || lc.locked || lc.status === 'SUBMITTED' || isContactSubmitted(lc) || isContactSubmitted(mergedContacts[targetIndex]));
-        mergedContacts[targetIndex] = {
-          ...lc,
-          ...mergedContacts[targetIndex],
-          photo_url: mergedContacts[targetIndex].photo_url || lc.photo_url,
-          pcu_file_url: mergedContacts[targetIndex].pcu_file_url || lc.pcu_file_url,
-          pcu_uploaded_by: mergedContacts[targetIndex].pcu_uploaded_by || lc.pcu_uploaded_by,
-          pcu_uploaded_at: mergedContacts[targetIndex].pcu_uploaded_at || lc.pcu_uploaded_at,
-          uploadedFiles: (lc.uploadedFiles && lc.uploadedFiles.length > 0) ? lc.uploadedFiles : mergedContacts[targetIndex].uploadedFiles,
-          isSubmitted: isSub,
-          status: isSub ? 'SUBMITTED' : (mergedContacts[targetIndex].status || lc.status || 'AVAILABLE'),
-          locked: isSub,
-          submittedToBase44: isSub,
-          submittedAt: lc.submittedAt || lc.pcu_uploaded_at || mergedContacts[targetIndex].submittedAt,
-          latitude: mergedContacts[targetIndex].latitude !== undefined ? mergedContacts[targetIndex].latitude : lc.latitude,
-          longitude: mergedContacts[targetIndex].longitude !== undefined ? mergedContacts[targetIndex].longitude : lc.longitude,
-          geotagged: mergedContacts[targetIndex].geotagged || lc.geotagged,
-          deleted_at: mergedContacts[targetIndex].deleted_at !== undefined ? mergedContacts[targetIndex].deleted_at : lc.deleted_at
-        };
+        if (isContactSubmitted(lc) || isContactSubmitted(mergedContacts[targetIndex])) {
+          // Remove from merged contacts if submitted
+          mergedContacts.splice(targetIndex, 1);
+        } else {
+          mergedContacts[targetIndex] = {
+            ...lc,
+            ...mergedContacts[targetIndex],
+            photo_url: mergedContacts[targetIndex].photo_url || lc.photo_url,
+            pcu_file_url: mergedContacts[targetIndex].pcu_file_url || lc.pcu_file_url,
+            pcu_uploaded_by: mergedContacts[targetIndex].pcu_uploaded_by || lc.pcu_uploaded_by,
+            pcu_uploaded_at: mergedContacts[targetIndex].pcu_uploaded_at || lc.pcu_uploaded_at,
+            uploadedFiles: (lc.uploadedFiles && lc.uploadedFiles.length > 0) ? lc.uploadedFiles : mergedContacts[targetIndex].uploadedFiles,
+            latitude: mergedContacts[targetIndex].latitude !== undefined ? mergedContacts[targetIndex].latitude : lc.latitude,
+            longitude: mergedContacts[targetIndex].longitude !== undefined ? mergedContacts[targetIndex].longitude : lc.longitude,
+            geotagged: mergedContacts[targetIndex].geotagged || lc.geotagged,
+            deleted_at: mergedContacts[targetIndex].deleted_at !== undefined ? mergedContacts[targetIndex].deleted_at : lc.deleted_at
+          };
+        }
       }
     }
   }
 
   contactsCache = deduplicateContactsByName(
-    mergedContacts.filter(c => c && !c.deleted_at && !isContactTombstoned(c))
+    mergedContacts.filter(c => c && !c.deleted_at && !isContactTombstoned(c) && !isContactSubmitted(c))
   );
   syncPCUFieldsToCache();
   await saveContacts();
@@ -6186,21 +6134,15 @@ export async function pullDeletedRecordsFromGoogleSheets(): Promise<boolean> {
             id: row[0] ? (isNaN(parseInt(row[0], 10)) ? row[0] : parseInt(row[0], 10)) : '',
             full_name: (row[1] || '').toString().trim(),
             barangay: (row[2] || '').toString().trim(),
-            deletedAt: (row[3] || '').toString().trim() || new Date().toISOString()
+            deletedAt: (row[3] || '').toString().trim() || new Date().toISOString(),
+            submitted_to_base44: row[4] ? (row[4].toString().trim().toUpperCase() === 'TRUE') : false
           })).filter(c => c.full_name);
 
           pulledContacts.forEach(pc => {
-            const isActiveInSheet = contactsCache.some(ac => 
-              (pc.id && ac.id && pc.id.toString() === ac.id.toString()) ||
-              (normalizeCompareName(pc.full_name, ac.full_name) && 
-               normalizeBarangayName(pc.barangay).toLowerCase() === normalizeBarangayName(ac.barangay).toLowerCase())
-            );
-            if (isActiveInSheet) return;
-
             const alreadyLocal = deletedContactsCache.some(lc => 
               (pc.id && lc.id && pc.id.toString() === lc.id.toString()) ||
               (normalizeCompareName(pc.full_name, lc.full_name) && 
-               normalizeBarangayName(pc.barangay).toLowerCase() === normalizeBarangayName(lc.barangay).toLowerCase())
+               (pc.submitted_to_base44 || (lc as any).submitted_to_base44 || normalizeBarangayName(pc.barangay).toLowerCase() === normalizeBarangayName(lc.barangay).toLowerCase()))
             );
             if (!alreadyLocal) {
               deletedContactsCache.push(pc);
@@ -6260,7 +6202,7 @@ export async function pullDeletedRecordsFromGoogleSheets(): Promise<boolean> {
     if (loadedAny) {
       console.log('[Google Sheets] Pulled deleted records and tombstones successfully!');
       // Apply filtering to local active cache immediately to scrub deleted records
-      contactsCache = contactsCache.filter(c => !isContactTombstoned(c) && !isBarangayTombstoned(c.barangay));
+      contactsCache = contactsCache.filter(c => !isContactTombstoned(c) && !isBarangayTombstoned(c.barangay) && !isContactSubmitted(c));
       barangaysCache = barangaysCache.filter(b => !isBarangayTombstoned(b));
       usersCache = usersCache.filter(u => !isUserTombstoned(u.username, u.email));
       await saveContacts();
@@ -7523,7 +7465,9 @@ export async function addPCUUpdate(
         const deletedFromSheets = await deleteContactPermanentlyFromGoogleSheets(contact);
         if (!deletedFromSheets) {
           sheetsSyncSuccess = false;
-          sheetsSyncWarning = 'Google Sheets row deletion could not be verified.';
+          sheetsSyncWarning = 'Google Sheets direct row deletion could not be verified; performing full sheet rewrite fallback...';
+          console.warn('[Submission Pipeline] Direct row deletion could not be verified; falling back to full sheet rewrite...');
+          await rewriteAllContactsToGoogleSheets().catch(err2 => console.error('Failed fallback rewrite to Google Sheets:', err2));
         } else {
           console.log(`[Submission Pipeline] Step 2 Confirmed: Contact "${fullName}" permanently deleted from Google Sheets.`);
         }
@@ -7531,57 +7475,48 @@ export async function addPCUUpdate(
         sheetsSyncSuccess = false;
         sheetsSyncWarning = err.message || 'Error deleting row from Google Sheets';
         console.error('[Submission Pipeline] Step 2 Error permanently deleting submitted contact from Google Sheets:', sheetsSyncWarning);
+        await rewriteAllContactsToGoogleSheets().catch(err2 => console.error('Failed fallback rewrite to Google Sheets:', err2));
       }
     }
     await forwardToWebApp('delete', contact).catch(() => {});
 
-    // 3. KEEP IN PCU DIRECTORY AS PERMANENTLY LOCKED & SUBMITTED:
-    console.log(`[Submission Pipeline] Step 3: Marking contact "${fullName}" as permanently SUBMITTED & LOCKED in PCU Directory...`);
-    contact.status = 'SUBMITTED';
-    contact.locked = true;
-    contact.submittedToBase44 = true;
-    contact.isSubmitted = true;
-    contact.submittedAt = contact.submittedAt || new Date().toISOString();
-    contact.pcu_uploaded_by = username;
-    contact.pcu_uploaded_at = contact.submittedAt;
-    contact.updated_at = new Date().toISOString();
-
+    // 3. PERMANENTLY DELETE CONTACT FROM PCU DIRECTORY AND RECORD TOMBSTONE:
+    console.log(`[Submission Pipeline] Step 3: Permanently deleting contact "${fullName}" from PCU Directory and recording tombstone...`);
     const targetContactId = contact.id;
-    const targetContactName = contact.full_name;
+    const targetContactName = contact.full_name || fullName;
+    const targetContactBarangay = contact.barangay || options?.barangay || '';
 
-    // Synchronize across all matching instances in contactsCache
-    for (const c of contactsCache) {
-      if (c && (c.id === targetContactId || normalizeCompareName(c.full_name, targetContactName))) {
-        c.status = 'SUBMITTED';
-        c.locked = true;
-        c.submittedToBase44 = true;
-        c.isSubmitted = true;
-        c.submittedAt = contact.submittedAt;
-        c.pcu_uploaded_by = username;
-        c.pcu_uploaded_at = contact.submittedAt;
-        c.pcu_file_url = contact.pcu_file_url;
-        c.uploadedFiles = contact.uploadedFiles;
-        c.updated_at = contact.updated_at;
-      }
-    }
-
-    // Clean up any historical deletedContactsCache tombstone so it stays visible and locked in directory
+    // Record tombstone in deletedContactsCache with submitted_to_base44: true
     deletedContactsCache = deletedContactsCache.filter(d => 
-      !(contact.id && d.id === contact.id) && 
-      !(contact.full_name && d.full_name && normalizeCompareName(d.full_name, contact.full_name))
+      !(targetContactId && d.id && d.id.toString() === targetContactId.toString()) && 
+      !(targetContactName && d.full_name && normalizeCompareName(d.full_name, targetContactName))
     );
+    deletedContactsCache.push({
+      id: targetContactId,
+      full_name: targetContactName,
+      barangay: targetContactBarangay,
+      deletedAt: new Date().toISOString(),
+      submitted_to_base44: true
+    });
     await safeWriteFile(DELETED_CONTACTS_FILE, JSON.stringify(deletedContactsCache, null, 2), 'utf-8');
+    syncDeletedRecordsToGoogleSheets(true).catch(err => console.error('Failed to sync deleted records to Google Sheets:', err));
 
+    // Permanently remove from contactsCache so it NEVER displays in PCU Directory or in any folder
+    contactsCache = contactsCache.filter(c => 
+      !(targetContactId && c.id && c.id.toString() === targetContactId.toString()) && 
+      !(targetContactName && c.full_name && normalizeCompareName(c.full_name, targetContactName))
+    );
     await saveContacts();
-    await addActivity(username, `Uploaded PCU File "${fileName}", submitted to Base44, and permanently locked as SUBMITTED in PCU Directory: "${fullName}"`);
+
+    await addActivity(username, `Uploaded PCU File "${fileName}", submitted to Base44, and permanently deleted from PCU Directory and Google Sheets database: "${fullName}"`);
 
     return {
       ...newUpdate,
       sheetsSyncSuccess,
       sheetsSyncWarning: sheetsSyncWarning || undefined,
+      isDeleted: true,
       isSubmitted: true,
       status: 'SUBMITTED',
-      locked: true,
       submittedToBase44: true
     };
   } else {
@@ -7820,7 +7755,9 @@ export async function addPCUUpdatesMultiple(
         const deletedFromSheets = await deleteContactPermanentlyFromGoogleSheets(contact);
         if (!deletedFromSheets) {
           sheetsSyncSuccess = false;
-          sheetsSyncWarning = 'Google Sheets row deletion could not be verified.';
+          sheetsSyncWarning = 'Google Sheets direct row deletion could not be verified; performing full sheet rewrite fallback...';
+          console.warn('[Submission Pipeline] Direct row deletion could not be verified; falling back to full sheet rewrite...');
+          await rewriteAllContactsToGoogleSheets().catch(err2 => console.error('Failed fallback rewrite to Google Sheets:', err2));
         } else {
           console.log(`[Submission Pipeline] Step 2 Confirmed: Contact "${fullName}" permanently deleted from Google Sheets.`);
         }
@@ -7828,59 +7765,49 @@ export async function addPCUUpdatesMultiple(
         sheetsSyncSuccess = false;
         sheetsSyncWarning = err.message || 'Error deleting row from Google Sheets';
         console.error('[Submission Pipeline] Step 2 Error permanently deleting submitted contact from Google Sheets:', sheetsSyncWarning);
+        await rewriteAllContactsToGoogleSheets().catch(err2 => console.error('Failed fallback rewrite to Google Sheets:', err2));
       }
     }
     await forwardToWebApp('delete', contact).catch(() => {});
 
-    // 3. KEEP IN PCU DIRECTORY AS PERMANENTLY LOCKED & SUBMITTED:
-    console.log(`[Submission Pipeline] Step 3: Marking contact "${fullName}" as permanently SUBMITTED & LOCKED in PCU Directory...`);
-    contact.status = 'SUBMITTED';
-    contact.locked = true;
-    contact.submittedToBase44 = true;
-    contact.isSubmitted = true;
-    contact.submittedAt = lastUploadedAt;
-    contact.pcu_uploaded_by = username;
-    contact.pcu_uploaded_at = lastUploadedAt;
-    contact.updated_at = new Date().toISOString();
-
+    // 3. PERMANENTLY DELETE CONTACT FROM PCU DIRECTORY AND RECORD TOMBSTONE:
+    console.log(`[Submission Pipeline] Step 3: Permanently deleting contact "${fullName}" from PCU Directory and recording tombstone...`);
     const targetContactId = contact.id;
-    const targetContactName = contact.full_name;
+    const targetContactName = contact.full_name || fullName;
+    const targetContactBarangay = contact.barangay || options?.barangay || '';
 
-    // Synchronize across all matching instances in contactsCache
-    for (const c of contactsCache) {
-      if (c && (c.id === targetContactId || normalizeCompareName(c.full_name, targetContactName))) {
-        c.status = 'SUBMITTED';
-        c.locked = true;
-        c.submittedToBase44 = true;
-        c.isSubmitted = true;
-        c.submittedAt = lastUploadedAt;
-        c.pcu_uploaded_by = username;
-        c.pcu_uploaded_at = lastUploadedAt;
-        c.pcu_file_url = contact.pcu_file_url;
-        c.uploadedFiles = contact.uploadedFiles;
-        c.updated_at = contact.updated_at;
-      }
-    }
-
-    // Clean up any historical deletedContactsCache tombstone so it stays visible and locked in directory
+    // Record tombstone in deletedContactsCache with submitted_to_base44: true
     deletedContactsCache = deletedContactsCache.filter(d => 
-      !(contact.id && d.id === contact.id) && 
-      !(contact.full_name && d.full_name && normalizeCompareName(d.full_name, contact.full_name))
+      !(targetContactId && d.id && d.id.toString() === targetContactId.toString()) && 
+      !(targetContactName && d.full_name && normalizeCompareName(d.full_name, targetContactName))
     );
+    deletedContactsCache.push({
+      id: targetContactId,
+      full_name: targetContactName,
+      barangay: targetContactBarangay,
+      deletedAt: new Date().toISOString(),
+      submitted_to_base44: true
+    });
     await safeWriteFile(DELETED_CONTACTS_FILE, JSON.stringify(deletedContactsCache, null, 2), 'utf-8');
+    syncDeletedRecordsToGoogleSheets(true).catch(err => console.error('Failed to sync deleted records to Google Sheets:', err));
 
+    // Permanently remove from contactsCache so it NEVER displays in PCU Directory or in any folder
+    contactsCache = contactsCache.filter(c => 
+      !(targetContactId && c.id && c.id.toString() === targetContactId.toString()) && 
+      !(targetContactName && c.full_name && normalizeCompareName(c.full_name, targetContactName))
+    );
     await saveContacts();
 
     const totalUploadedCount = options?.totalFilesCount || files.length;
-    await addActivity(username, `Uploaded ${totalUploadedCount} PCU File(s), submitted to Base44, and permanently locked as SUBMITTED in PCU Directory: "${fullName}"`);
+    await addActivity(username, `Uploaded ${totalUploadedCount} PCU File(s), submitted to Base44, and permanently deleted from PCU Directory and Google Sheets database: "${fullName}"`);
 
     return {
       ...contact,
       sheetsSyncSuccess,
       sheetsSyncWarning: sheetsSyncWarning || undefined,
+      isDeleted: true,
       isSubmitted: true,
       status: 'SUBMITTED',
-      locked: true,
       submittedToBase44: true
     };
   } else {
